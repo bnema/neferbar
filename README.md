@@ -86,7 +86,7 @@ Make it executable (`chmod +x clock.sh`) and put its path in `exec`. That's all.
 Rules:
 
 1. Print one line, then print another line later. The new line replaces the old one.
-2. A frame ends at a newline (`\n`) or a form feed (`\f`). Use `\f` if the frame itself should not end the line.
+2. A frame ends at a newline (`\n`) or a form feed (`\f`). They mean the same thing. Text after the last one, with no ending yet, is not shown until its frame is finished.
 3. Keep the script running. A script that exits is restarted after a short delay, and the bar shows `[name!]` in the meantime.
 4. Print errors to stderr. They go to the bar's log and not to the screen.
 5. Frames are cut to 16 KiB, and text wider than the bar is clipped.
