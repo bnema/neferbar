@@ -1,0 +1,27 @@
+# The bundled bar: workspaces on the left, the focused app in the middle, the
+# clock on the right. Colors come from the terminal you use.
+#
+# Install:
+#   mkdir -p ~/.config/neferbar
+#   cp -r examples/bundle ~/.config/neferbar/
+#   cp examples/bundle/config.toml ~/.config/neferbar/config.toml
+
+[bar]
+font = "JetBrainsMono Nerd Font Mono"   # any "Mono" Nerd Font
+size = 14
+theme = "auto"                          # the colors of your terminal, or the path of a theme file
+
+[[module]]
+name = "workspaces"
+zone = "left"
+exec = "~/.config/neferbar/bundle/left.sh"
+
+[[module]]
+name = "focus"
+zone = "center"
+exec = "~/.config/neferbar/bundle/center.sh"
+
+[[module]]
+name = "clock"
+zone = "right"
+exec = "~/.config/neferbar/bundle/right.sh"

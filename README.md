@@ -36,8 +36,7 @@ Create `~/.config/neferbar/config.toml`:
 [bar]
 font = "JetBrainsMono Nerd Font Mono"   # use a "Mono" Nerd Font so icons fit one cell
 size = 14                                # text size
-background = "#1e1e2e"
-foreground = "#cdd6f4"
+theme = "auto"                           # colors of your terminal, or the path of a theme file
 
 [[module]]
 name = "clock"          # a unique name
@@ -53,9 +52,32 @@ Add one `[[module]]` block per script. Save the file and the bar updates immedia
 | `bar.size` | `14` | Text size in logical pixels. |
 | `bar.scale` | `1.0` | Extra zoom on top of the monitor scale. |
 | `bar.output` | any | A monitor name such as `HDMI-A-1`. Needs a restart. |
-| `bar.background`, `bar.foreground` | catppuccin | `#rrggbb`. |
+| `bar.theme` | `auto` | `auto` reads the colors of the terminal you use. Or the path of a theme file (see Colors). |
+| `bar.background`, `bar.foreground` | from the theme | `#rrggbb`. Set them to override the theme. |
 
 If the font is not installed, neferbar warns and falls back to another font, and icons may be missing.
+
+## Colors
+
+The bar takes its colors from your terminal, so it matches the rest of your desktop.
+
+```toml
+theme = "auto"                                  # the terminal you use
+theme = "~/.config/kitty/themes/mytheme.conf"   # or one file
+```
+
+`auto` picks the terminal named by `$TERMINAL` (or the first entry of `xdg-terminals.list`), and otherwise the first of kitty, ghostty, foot and alacritty that has a config with colors. A file can be any of those formats, and the bar recognizes it by its content. Includes and `theme =` names are followed. Colors the file does not set come from a built-in dark theme.
+
+The bar watches every file it read: change your terminal's theme and the bar changes with it. If the theme cannot be read, the bar uses the built-in colors and says why in its log.
+
+Scripts get the colors as environment variables, each `#rrggbb`, so a script never hard-codes one:
+
+| Variable | Color |
+|---|---|
+| `NEFERBAR_BACKGROUND`, `NEFERBAR_FOREGROUND` | the bar's own background and text |
+| `NEFERBAR_COLOR0` .. `NEFERBAR_COLOR15` | the theme's 16 ANSI colors |
+
+The 16 ANSI codes a script prints (`\033[31m` red, `\033[44m` blue background and so on) use the theme as well.
 
 ## Write a script
 
@@ -142,9 +164,37 @@ done
 
 neferbar draws at most as often as your monitor refreshes. If a script prints faster than that, only the latest frame is drawn. A script that prints nothing costs nothing.
 
+### The bundled bar
+
+`examples/bundle` is a ready-made bar: workspaces on the left, the focused app in the middle, the clock on the right, in your terminal's colors.
+
+![The bundled bar](docs/img/bundle.png)
+ Copy it to `~/.config/neferbar/` (the install steps are at the top of `examples/bundle/config.toml`).
+
+Its helper `lib.sh` has what a themed script needs: `fg`/`bg` to set a color from `#rrggbb`, `mix` to blend two, `fade` for the soft edge, and `state_changed_loop` to react to NeferWL. Read the three scripts: each is about thirty lines.
+
+On NeferWL the workspaces show one dot per window and the stash. On other compositors the workspace and focus modules show nothing yet, and the clock still works.
+
+### Reacting to your compositor (workspace effects)
+
+A module can watch anything, including the compositor's own state. NeferWL keeps a JSON file up to date and passes its path to every program it starts as `$NEFERWL_STATE`. It replaces the file on each change, so a module only has to check the file's modification time:
+
+```sh
+stamp=$(mktemp)
+touch -r "$NEFERWL_STATE" "$stamp"
+while sleep 0.1; do
+    if [[ $NEFERWL_STATE -nt $stamp ]]; then       # the file changed
+        touch -r "$NEFERWL_STATE" "$stamp"
+        jq -r '.outputs[] | "\(.name) is on workspace \(.active)"' "$NEFERWL_STATE"
+    fi
+done
+```
+
+That is all it takes to draw an effect when you switch workspace. `examples/bundle/left.sh` redraws the workspaces that way.
+
 ### Example modules
 
-The `examples/modules` directory has three:
+The `examples/modules` directory has these:
 
 - `static.sh`: one line, then idle.
 - `clock.sh`: a clock with an icon.
