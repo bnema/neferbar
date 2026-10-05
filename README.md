@@ -4,7 +4,7 @@ A dead simple status bar for Wayland: **one line of terminal text, nothing else.
 
 Each part of the bar is a script. A script prints text, and neferbar shows it. If you can write `echo`, you can write a module.
 
-![neferbar showing a workspace number, an app name, a clock and system stats, with Nerd Font icons](docs/img/bar.png)
+![The bundled bar on a NeferWL desktop with a terminal and an empty Firefox: workspaces on the left, the focused app and its title in the middle, the clock on the right](docs/img/bundle.png)
 
 - **Text only.** ASCII, Unicode and Nerd Font icons. No images, no widgets, no clicks.
 - **Exactly one character high.** The bar is as tall as a terminal row, and it follows your monitor's scale.
@@ -179,7 +179,6 @@ neferbar draws at most as often as your monitor refreshes. If a script prints fa
 
 `examples/bundle` is a ready-made bar: workspaces on the left, the focused app in the middle, the clock on the right, in your terminal's colors.
 
-![The bundled bar](docs/img/bundle.png)
  Copy it to `~/.config/neferbar/` (the install steps are at the top of `examples/bundle/config.toml`).
 
 Its helper `lib.sh` has what a themed script needs: `fg`/`bg` to set a color from `#rrggbb`, `mix` to blend two, `fade` for the soft edge, and `state_changed_loop` to react to NeferWL. Read the three scripts: each is about thirty lines.
