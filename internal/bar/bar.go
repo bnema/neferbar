@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/bnema/neferclient"
 
@@ -78,9 +79,16 @@ type Bar struct {
 	modCh   chan struct{}
 	cfgPath string
 	cfgCh   chan config.Config
-	Stats   Stats
-	fatal   error
-	closed  bool
+
+	// settling is true between a scale or size change and the moment both the
+	// new scale and the new logical width have arrived. They come as separate
+	// events, in either order; building a renderer from half of them presents a
+	// buffer of the wrong size, and some compositors keep that size.
+	settling bool
+	settleC  <-chan time.Time
+	Stats    Stats
+	fatal    error
+	closed   bool
 }
 
 // New builds a bar from a validated config.
@@ -232,6 +240,9 @@ func (b *Bar) Run(ctx context.Context) (err error) {
 			b.Stats.ModuleWake++
 		case next := <-b.cfgCh:
 			b.applyConfig(next)
+		case <-b.settleC:
+			b.settleC, b.settling = nil, false
+			b.reconcile()
 		}
 		if b.fatal != nil {
 			return b.fatal
@@ -315,7 +326,7 @@ func (b *Bar) step() error {
 }
 
 func (b *Bar) draw() error {
-	if !b.dirty || !b.canPresent || b.rend == nil {
+	if !b.dirty || !b.canPresent || b.rend == nil || b.settling {
 		return nil
 	}
 	ok, err := b.rend.Draw(b.lay.Compose(), b.bg, &b.frame)
@@ -506,6 +517,22 @@ func (b *Bar) shutdown() error {
 	return errors.Join(errs...)
 }
 
+// settleDelay is how long the bar waits for the second half of a scale or size
+// change before it rebuilds.
+const settleDelay = 60 * time.Millisecond
+
+// geometryChanged is called when the compositor reports a new scale or size.
+// The first report builds at once, because there is nothing on screen yet.
+// Later ones wait for the dust to settle, and nothing is drawn meanwhile.
+func (b *Bar) geometryChanged() {
+	if b.rend == nil {
+		b.reconcile()
+		return
+	}
+	b.settling = true
+	b.settleC = time.After(settleDelay)
+}
+
 // Handler methods. Events of a replaced surface are ignored.
 
 // Configure marks the surface presentable and rebuilds as needed.
@@ -517,13 +544,13 @@ func (b *Bar) Configure(id neferclient.SurfaceID, _, _ int32) {
 		b.canPresent = true
 	}
 	b.configured = true
-	b.reconcile()
+	b.geometryChanged()
 }
 
 // Scale follows the monitor's preferred scale.
 func (b *Bar) Scale(id neferclient.SurfaceID, _ float64) {
 	if id == b.sid {
-		b.reconcile()
+		b.geometryChanged()
 	}
 }
 
