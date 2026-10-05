@@ -233,3 +233,23 @@ func TestParseColorForms(t *testing.T) {
 		}
 	}
 }
+
+func TestEnvVarsCarryTheChosenAccent(t *testing.T) {
+	th := Default()
+	th.Palette[2] = RGB{0x7d, 0xb5, 0xb5}
+	th.Palette[4] = RGB{0x6c, 0x9b, 0xd9}
+	has := func(env []string, want string) bool {
+		for _, e := range env {
+			if e == want {
+				return true
+			}
+		}
+		return false
+	}
+	if env := th.EnvVars(RGB{}, RGB{}, 2); !has(env, "NEFERBAR_ACCENT=#7db5b5") {
+		t.Errorf("accent 2 not exported as the teal: %v", env)
+	}
+	if env := th.EnvVars(RGB{}, RGB{}, 4); !has(env, "NEFERBAR_ACCENT=#6c9bd9") {
+		t.Errorf("accent 4 not exported as the blue: %v", env)
+	}
+}

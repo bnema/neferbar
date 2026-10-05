@@ -20,6 +20,9 @@ type Bar struct {
 	// Theme is "auto" (the colors of the terminal in use) or the path of a
 	// terminal theme or config file: kitty, foot, ghostty or alacritty.
 	Theme string `toml:"theme"`
+	// Accent is the number (0-15) of the theme's ANSI color the bundled
+	// scripts use for highlights. Scripts read it as $NEFERBAR_ACCENT.
+	Accent int `toml:"accent"`
 	// Background and Foreground, as #rrggbb, override the theme's.
 	Background string `toml:"background"`
 	Foreground string `toml:"foreground"`
@@ -42,7 +45,7 @@ type Config struct {
 func Default() Config {
 	return Config{Bar: Bar{
 		Font: "JetBrainsMono Nerd Font Mono", Size: 14, Scale: 1,
-		Theme: "auto",
+		Theme: "auto", Accent: 4,
 	}}
 }
 
@@ -92,6 +95,9 @@ func (c *Config) Validate() error {
 		if _, err := ParseColor(col); err != nil {
 			return err
 		}
+	}
+	if b.Accent < 0 || b.Accent > 15 {
+		return fmt.Errorf("config: bar.accent %d must be a color number from 0 to 15", b.Accent)
 	}
 	if b.Theme == "" {
 		return fmt.Errorf("config: bar.theme is empty; use \"auto\" or the path of a theme file")

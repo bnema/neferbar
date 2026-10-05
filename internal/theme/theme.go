@@ -227,10 +227,12 @@ func Mix(a, b RGB, t float64) RGB {
 func Hex(c RGB) string { return fmt.Sprintf("#%02x%02x%02x", c[0], c[1], c[2]) }
 
 // EnvVars returns the colors as environment entries for scripts:
-// NEFERBAR_BACKGROUND, NEFERBAR_FOREGROUND and NEFERBAR_COLOR0..15, each
-// #rrggbb. bg and fg are the colors the bar really uses.
-func (t Theme) EnvVars(bg, fg RGB) []string {
-	out := []string{"NEFERBAR_BACKGROUND=" + Hex(bg), "NEFERBAR_FOREGROUND=" + Hex(fg)}
+// NEFERBAR_BACKGROUND, NEFERBAR_FOREGROUND, NEFERBAR_ACCENT and
+// NEFERBAR_COLOR0..15, each #rrggbb. bg and fg are the colors the bar really
+// uses; accent is the number of the palette color chosen for highlights.
+func (t Theme) EnvVars(bg, fg RGB, accent int) []string {
+	out := []string{"NEFERBAR_BACKGROUND=" + Hex(bg), "NEFERBAR_FOREGROUND=" + Hex(fg),
+		"NEFERBAR_ACCENT=" + Hex(t.Palette[accent&15])}
 	for i, c := range t.Palette {
 		out = append(out, fmt.Sprintf("NEFERBAR_COLOR%d=%s", i, Hex(c)))
 	}

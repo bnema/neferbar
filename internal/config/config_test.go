@@ -37,6 +37,8 @@ func TestLoadErrors(t *testing.T) {
 		"bad size":     "[bar]\nsize = 1\n",
 		"bad scale":    "[bar]\nscale = 20\n",
 		"bad color":    "[bar]\nbackground = \"red\"\n",
+		"accent low":   "[bar]\naccent = -1\n",
+		"accent high":  "[bar]\naccent = 16\n",
 		"syntax error": "[bar\n",
 	} {
 		if _, err := Load(write(t, body), true); err == nil {
@@ -54,5 +56,16 @@ func TestMissingFile(t *testing.T) {
 	}
 	if _, err := Load(p, true); err == nil {
 		t.Fatal("explicit path missing must fail")
+	}
+}
+
+func TestAccentDefaultsToBlue(t *testing.T) {
+	c, err := Load(write(t, "[bar]\nsize = 14\n"), true)
+	if err != nil || c.Bar.Accent != 4 {
+		t.Fatalf("accent = %d, err %v; want the default 4", c.Bar.Accent, err)
+	}
+	c, err = Load(write(t, "[bar]\naccent = 2\n"), true)
+	if err != nil || c.Bar.Accent != 2 {
+		t.Fatalf("accent = %d, err %v; want 2", c.Bar.Accent, err)
 	}
 }

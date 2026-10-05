@@ -171,7 +171,7 @@ func (b *Bar) setTheme(th theme.Theme) {
 	b.theme = th
 	b.fg, b.bg = barColors(b.cfg, th)
 	b.pal = th.Palette
-	b.env = th.EnvVars(b.bg, b.fg)
+	b.env = th.EnvVars(b.bg, b.fg, b.cfg.Bar.Accent)
 	if b.lay != nil {
 		b.lay.SetColors(b.fg, b.bg, b.pal)
 	}

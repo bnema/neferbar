@@ -53,6 +53,7 @@ Add one `[[module]]` block per script. Save the file and the bar updates immedia
 | `bar.scale` | `1.0` | Extra zoom on top of the monitor scale. |
 | `bar.output` | any | A monitor name such as `HDMI-A-1`. Needs a restart. |
 | `bar.theme` | `auto` | `auto` reads the colors of the terminal you use. Or the path of a theme file (see Colors). |
+| `bar.accent` | `4` | Which of the theme's 16 colors (0-15) the highlights use. 4 is the ANSI blue; try 2 (green), 6 (cyan) or 5 (magenta) to match your theme. |
 | `bar.background`, `bar.foreground` | from the theme | `#rrggbb`. Set them to override the theme. |
 
 If the font is not installed, neferbar warns and falls back to another font, and icons may be missing.
@@ -84,6 +85,7 @@ Scripts get the colors as environment variables, each `#rrggbb`, so a script nev
 | Variable | Color |
 |---|---|
 | `NEFERBAR_BACKGROUND`, `NEFERBAR_FOREGROUND` | the bar's own background and text |
+| `NEFERBAR_ACCENT` | the highlight color, the theme color that `bar.accent` picks |
 | `NEFERBAR_COLOR0` .. `NEFERBAR_COLOR15` | the theme's 16 ANSI colors |
 
 The 16 ANSI codes a script prints (`\033[31m` red, `\033[44m` blue background and so on) use the theme as well.

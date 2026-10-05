@@ -10,6 +10,7 @@
 font = "JetBrainsMono Nerd Font Mono"   # any "Mono" Nerd Font
 size = 14
 theme = "auto"                          # the colors of the terminal in $TERMINAL, or the path of a theme file
+accent = 4                              # which theme color (0-15) highlights use: 4 is blue, 2 green, 6 cyan
 
 [[module]]
 name = "workspaces"

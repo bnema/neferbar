@@ -4,11 +4,14 @@
 # hard-codes one:
 #   NEFERBAR_BACKGROUND  the bar's own background
 #   NEFERBAR_FOREGROUND  the bar's text color
+#   NEFERBAR_ACCENT      the highlight color: bar.accent in the config picks
+#                        which of the 16 theme colors it is
 #   NEFERBAR_COLOR0..15  the theme's 16 ANSI colors
 
 : "${NEFERBAR_BACKGROUND:=#26263a}" "${NEFERBAR_FOREGROUND:=#cdd6f4}"
 : "${NEFERBAR_COLOR0:=#45475a}" "${NEFERBAR_COLOR2:=#a6e3a1}" "${NEFERBAR_COLOR3:=#f9e2af}"
 : "${NEFERBAR_COLOR4:=#89b4fa}" "${NEFERBAR_COLOR15:=#a6adc8}"
+: "${NEFERBAR_ACCENT:=$NEFERBAR_COLOR4}"
 
 RESET=$'\e[0m' BOLD=$'\e[1m'
 
@@ -43,7 +46,7 @@ fade() {
 }
 
 BAR=$NEFERBAR_BACKGROUND
-ACCENT=$NEFERBAR_COLOR4
+ACCENT=$NEFERBAR_ACCENT
 DIM=$(mix "$BAR" "$NEFERBAR_FOREGROUND" 45)
 
 # ink "#accent" -> the text color for a block of that color: the theme's black
