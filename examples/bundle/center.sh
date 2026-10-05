@@ -1,23 +1,20 @@
 #!/bin/bash
-# Center: the focused window. NeferWL's state file has the app id but no title;
-# a title needs the compositor's toplevel protocol, which the bar does not read yet.
+# Center: the focused window, as "icon  name  title". "neferbar app" asks the
+# compositor and prints one line each time the focus or a title changes, so this
+# script sleeps until something happens.
 . "$(dirname "$0")/lib.sh"
 
-[ -r "${NEFERWL_STATE:-}" ] || {
-	echo
-	exec sleep infinity
-}
+MAX_TITLE=${NEFERBAR_TITLE_MAX:-60} # cells; a longer title ends with an ellipsis
 
-draw() {
-	local app
-	# An app id is chosen by the application: drop control characters, which
-	# would otherwise reach the bar as escape sequences.
-	app=$(jq -r '(.window.app_id // empty) | explode | map(select(. >= 32 and . != 127)) | implode' "$NEFERWL_STATE" 2>/dev/null) || return
-	if [ -n "$app" ]; then
-		printf '%s%s%s %s%s%s\f' "$(bg "$BAR")" "$(fg "$NEFERBAR_COLOR3")" "$ICON_APP" "$(fg "$NEFERBAR_FOREGROUND")" "$app" "$RESET"
-	else
+# $NEFERBAR_BIN is the neferbar that started this script. A line ends the bar
+# when the compositor goes away; the bar then restarts the script.
+"$NEFERBAR_BIN" app name title | while IFS=$'\t' read -r name title; do
+	if [ -z "$name$title" ]; then
 		printf '\f'
+		continue
 	fi
-}
-
-state_changed_loop draw
+	((${#title} > MAX_TITLE)) && title="${title:0:MAX_TITLE-1}…"
+	printf '%s%s%s %s%s%s' "$(bg "$BAR")" "$(fg "$NEFERBAR_COLOR3")" "$ICON_APP" "$(fg "$NEFERBAR_FOREGROUND")" "$name" "$RESET"
+	[ -n "$title" ] && printf ' %s%s%s' "$(fg "$DIM")" "$title" "$RESET"
+	printf '\f'
+done

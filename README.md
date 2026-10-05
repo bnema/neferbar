@@ -232,6 +232,20 @@ neferbar [-config file] [-display socket] [-pprof addr] [-memstats interval]
 | `-pprof` | Serve Go profiling on a loopback address, such as `localhost:6060`. |
 | `-memstats` | Log allocation counters at this interval. |
 
+## Reading the focused window
+
+`neferbar app` prints fields of the window that has the focus: one line now, then a new one each time the focus or a title changes. It works on compositors that offer `zwlr_foreign_toplevel_manager_v1` (NeferWL, Sway, Hyprland, River, Niri).
+
+```
+neferbar app title            # Dumber - docs
+neferbar app id               # com.github.bnema.dumber
+neferbar app name             # dumber (the part of the id after the last dot)
+neferbar app name title       # several fields, separated by a tab
+neferbar app -once title      # print once and exit
+```
+
+A line is empty when no window has the focus. Control characters are removed from every field, so a title cannot move a terminal's cursor. Scripts started by the bar find the binary in `$NEFERBAR_BIN`.
+
 ## Test without touching your desktop
 
 ```sh

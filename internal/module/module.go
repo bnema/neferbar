@@ -151,6 +151,11 @@ func (m *Module) runOnce(ctx context.Context) error {
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Env = append(append(os.Environ(), m.Env...), "NEFERBAR_MODULE="+m.Name)
+	// Scripts call "$NEFERBAR_BIN app title" and friends: the path of the very
+	// binary that started them, which need not be in $PATH.
+	if exe, err := os.Executable(); err == nil {
+		cmd.Env = append(cmd.Env, "NEFERBAR_BIN="+exe)
+	}
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return err

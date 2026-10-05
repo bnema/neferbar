@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -20,6 +21,16 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "app" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		err := runApp(ctx, os.Args[2:], os.Getenv("NEFERBAR_DISPLAY"))
+		stop()
+		if err != nil && !errors.Is(err, flag.ErrHelp) {
+			fmt.Fprintf(os.Stderr, "neferbar app: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	cfgPath := flag.String("config", "", "config file (default: $XDG_CONFIG_HOME/neferbar/config.toml)")
 	display := flag.String("display", os.Getenv("NEFERBAR_DISPLAY"), "Wayland socket name or absolute path (default: $NEFERBAR_DISPLAY, then $WAYLAND_DISPLAY)")
 	pprofAddr := flag.String("pprof", "", "serve pprof on this loopback address, e.g. localhost:6060")
