@@ -20,7 +20,6 @@ RESET=$'\e[0m' BOLD=$'\e[1m'
 ICON_DOT=$'\xef\x84\x91'     # U+F111 circle
 ICON_STASH=$'\xef\x86\x87'   # U+F187 archive
 ICON_APP=$'\xef\x8b\x90'     # U+F2D0 window
-ICON_CLOCK=$'\xef\x80\x97'   # U+F017 clock
 
 # rgb "#rrggbb" -> "r;g;b"
 rgb() {
