@@ -13,7 +13,9 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/bnema/neferclient"
 
@@ -40,9 +42,10 @@ type Stats struct {
 
 // Bar is the running application.
 type Bar struct {
-	cfg    config.Config
-	log    *slog.Logger
-	fg, bg [3]uint8
+	cfg     config.Config
+	log     *slog.Logger
+	display string
+	fg, bg  [3]uint8
 
 	conn *neferclient.Conn
 	surf *neferclient.Surface
@@ -76,8 +79,9 @@ type Bar struct {
 }
 
 // New builds a bar from a validated config.
-func New(cfg config.Config, log *slog.Logger) (*Bar, error) {
-	b := &Bar{cfg: cfg, log: log, modCh: make(chan struct{}, 1)}
+// display names the Wayland socket; empty uses $WAYLAND_DISPLAY.
+func New(cfg config.Config, log *slog.Logger, display string) (*Bar, error) {
+	b := &Bar{cfg: cfg, log: log, display: display, modCh: make(chan struct{}, 1)}
 	var err error
 	if b.fg, err = config.ParseColor(cfg.Bar.Foreground); err != nil {
 		return nil, err
@@ -104,11 +108,15 @@ func New(cfg config.Config, log *slog.Logger) (*Bar, error) {
 // Run connects to the compositor and serves until ctx ends or the surface is
 // closed. It returns the first fatal error.
 func (b *Bar) Run(ctx context.Context) (err error) {
-	b.conn, err = neferclient.Connect(ctx, "")
+	b.conn, err = neferclient.Connect(ctx, b.display)
 	if err != nil {
-		return fmt.Errorf("connect: %w", err)
+		return connectError(b.display, err)
 	}
-	defer func() { err = errors.Join(err, b.shutdown()) }()
+	defer func() {
+		err = errors.Join(err, b.shutdown())
+		b.log.Info("stats", "presented", b.Stats.Presented, "rebuilds", b.Stats.Rebuilds,
+			"recreated", b.Stats.Recreated, "no_slot", b.Stats.NoSlot, "dirty", b.Stats.Dirty, "module_wakes", b.Stats.ModuleWake)
+	}()
 	if err = b.createSurface(estimateHeight(b.cfg.Bar.Size * b.cfg.Bar.Scale)); err != nil {
 		return err
 	}
@@ -136,6 +144,34 @@ func (b *Bar) Run(ctx context.Context) (err error) {
 		}
 	}
 	return nil
+}
+
+// socketPath mirrors how neferclient resolves the socket, for error messages.
+func socketPath(display string) string {
+	if display == "" {
+		display = os.Getenv("WAYLAND_DISPLAY")
+	}
+	if display == "" {
+		display = "wayland-0"
+	}
+	if filepath.IsAbs(display) {
+		return display
+	}
+	return filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), display)
+}
+
+// connectError turns a failed dial into one actionable sentence.
+func connectError(display string, err error) error {
+	path := socketPath(display)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("no Wayland socket at %s: is the compositor running? Set WAYLAND_DISPLAY, NEFERBAR_DISPLAY or -display", path)
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return fmt.Errorf("the Wayland socket %s exists but refuses connections: stale socket or compositor not ready", path)
+	case errors.Is(err, os.ErrPermission):
+		return fmt.Errorf("not allowed to open the Wayland socket %s", path)
+	}
+	return err
 }
 
 // estimateHeight is the first request, before the real cell height is known.

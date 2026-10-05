@@ -15,7 +15,9 @@ go build -o neferbar ./cmd/neferbar
 ./neferbar -config examples/config.toml
 ```
 
-Flags: `-config <file>`, `-pprof <loopback addr>`, `-memstats <interval>`.
+Flags: `-config <file>`, `-display <socket>`, `-pprof <loopback addr>`, `-memstats <interval>`.
+
+The Wayland socket comes from `-display`, then `$NEFERBAR_DISPLAY`, then `$WAYLAND_DISPLAY`, then `wayland-0`. A relative name lives in `$XDG_RUNTIME_DIR`; an absolute path is used as is.
 
 ## Configuration
 

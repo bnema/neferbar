@@ -21,6 +21,7 @@ import (
 
 func main() {
 	cfgPath := flag.String("config", "", "config file (default: $XDG_CONFIG_HOME/neferbar/config.toml)")
+	display := flag.String("display", os.Getenv("NEFERBAR_DISPLAY"), "Wayland socket name or absolute path (default: $NEFERBAR_DISPLAY, then $WAYLAND_DISPLAY)")
 	pprofAddr := flag.String("pprof", "", "serve pprof on this loopback address, e.g. localhost:6060")
 	memStats := flag.Duration("memstats", 0, "log allocation counters at this interval (0: off)")
 	flag.Parse()
@@ -28,13 +29,13 @@ func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, log, *cfgPath, *pprofAddr, *memStats); err != nil {
-		log.Error("neferbar", "err", err)
+	if err := run(ctx, log, *cfgPath, *display, *pprofAddr, *memStats); err != nil {
+		fmt.Fprintf(os.Stderr, "neferbar: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, log *slog.Logger, cfgPath, pprofAddr string, memStats time.Duration) error {
+func run(ctx context.Context, log *slog.Logger, cfgPath, display, pprofAddr string, memStats time.Duration) error {
 	explicit := cfgPath != ""
 	if !explicit {
 		cfgPath = config.DefaultPath()
@@ -48,17 +49,14 @@ func run(ctx context.Context, log *slog.Logger, cfgPath, pprofAddr string, memSt
 			return err
 		}
 	}
-	b, err := bar.New(cfg, log)
+	b, err := bar.New(cfg, log, display)
 	if err != nil {
 		return err
 	}
 	if memStats > 0 {
 		go logMemStats(ctx, log, memStats)
 	}
-	err = b.Run(ctx)
-	log.Info("stats", "presented", b.Stats.Presented, "rebuilds", b.Stats.Rebuilds,
-		"recreated", b.Stats.Recreated, "no_slot", b.Stats.NoSlot, "dirty", b.Stats.Dirty, "module_wakes", b.Stats.ModuleWake)
-	return err
+	return b.Run(ctx)
 }
 
 // servePprof serves the pprof handlers on a loopback address only.

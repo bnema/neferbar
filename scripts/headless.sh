@@ -2,7 +2,7 @@
 # Run neferbar against a nested headless NeferWL with a clean environment.
 # usage: scripts/headless.sh <config> <seconds> [neferbar args...]
 # env: SIZE=WxH (output size), SCALE=1.5 (output scale), OUT=dir (screenshots),
-#      NEFERBAR=binary, LOGLINES=n (compositor log lines to show).
+#      DISPLAY_VAR=NEFERBAR_DISPLAY (pass the socket that way), NEFERBAR=binary, LOGLINES=n (compositor log lines to show).
 set -eu
 cfg=$1; secs=$2; shift 2
 out=${OUT:-/tmp/neferbar-shots}
@@ -24,6 +24,6 @@ for _ in $(seq 100); do
 done
 [ -n "${sock:-}" ] || { echo "no compositor socket"; cat "$root/neferwl.log"; exit 1; }
 set +e
-timeout "$secs" "${clean[@]}" WAYLAND_DISPLAY="$sock" "${NEFERBAR:-/tmp/neferbar}" -config "$cfg" "$@"
+timeout "$secs" "${clean[@]}" "${DISPLAY_VAR:-WAYLAND_DISPLAY}=$sock" "${NEFERBAR:-/tmp/neferbar}" -config "$cfg" "$@"
 echo "neferbar exit: $?"
 echo "--- compositor log"; grep -v "not a conformant" "$root/neferwl.log" | tail -"${LOGLINES:-8}"; cp "$root/neferwl.log" /tmp/neferwl-last.log
