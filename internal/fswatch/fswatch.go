@@ -1,4 +1,5 @@
-// Package fswatch reports changes to one file with inotify.
+// Package fswatch reports changes to one file, or to the files of one
+// directory, with inotify.
 //
 // It watches the parent directory, so a file that is replaced by a rename (the
 // way editors and NeferWL write) is noticed, and it follows symlinks, so a
@@ -54,6 +55,23 @@ func files(path string) []string {
 // full, the pending signal already says "something changed", which is all a
 // reader needs. Use a channel with a buffer of 1. Watch blocks until ctx ends.
 func Watch(ctx context.Context, path string, debounce time.Duration, out chan<- struct{}) error {
+	return watch(ctx, path, false, debounce, out)
+}
+
+// WatchDir is Watch for every file directly inside dir. Hidden files (a name
+// starting with a dot, such as an editor's swap file) and backup files (a name
+// ending in "~") are ignored. Subdirectories are not watched.
+func WatchDir(ctx context.Context, dir string, debounce time.Duration, out chan<- struct{}) error {
+	return watch(ctx, dir, true, debounce, out)
+}
+
+// visible reports whether a change to a file called name in a watched
+// directory is worth reporting.
+func visible(name string) bool {
+	return name != "" && name[0] != '.' && name[len(name)-1] != '~'
+}
+
+func watch(ctx context.Context, path string, dirMode bool, debounce time.Duration, out chan<- struct{}) error {
 	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
 	if err != nil {
 		return err
@@ -78,6 +96,9 @@ func Watch(ctx context.Context, path string, debounce time.Duration, out chan<- 
 			}
 			clear(names)
 			watched = files(path)
+			if dirMode {
+				watched = []string{filepath.Join(path, "x")} // its Dir is the directory itself
+			}
 			for _, file := range watched {
 				wd, err := unix.InotifyAddWatch(fd, filepath.Dir(file), mask)
 				if errors.Is(err, unix.ENOENT) {
@@ -90,7 +111,9 @@ func Watch(ctx context.Context, path string, debounce time.Duration, out chan<- 
 				if names[int32(wd)] == nil {
 					names[int32(wd)] = map[string]bool{}
 				}
-				names[int32(wd)][filepath.Base(file)] = true
+				if !dirMode {
+					names[int32(wd)][filepath.Base(file)] = true
+				}
 			}
 		}
 
@@ -147,9 +170,9 @@ func Watch(ctx context.Context, path string, debounce time.Duration, out chan<- 
 					for len(name) > 0 && name[len(name)-1] == 0 {
 						name = name[:len(name)-1]
 					}
-					if names[ev.Wd][string(name)] && ev.Mask&mask != 0 {
+					if ev.Mask&mask != 0 && (names[ev.Wd][string(name)] || (dirMode && names[ev.Wd] != nil && visible(string(name)))) {
 						pending = time.Now().Add(debounce)
-						if !slices.Equal(watched, files(path)) {
+						if !dirMode && !slices.Equal(watched, files(path)) {
 							rewatch = true // a symlink now points elsewhere
 						}
 					}

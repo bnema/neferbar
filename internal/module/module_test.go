@@ -111,3 +111,23 @@ func TestStopEndsTheScriptsChildren(t *testing.T) {
 		t.Fatal("a child of the script is still running after Wait returned")
 	}
 }
+
+func TestScriptDir(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	cwd, _ := os.Getwd()
+	for command, want := range map[string]string{
+		"/opt/bar/left.sh":          "/opt/bar",
+		"/opt/bar/left.sh 60 30":    "/opt/bar",
+		"~/.config/neferbar/a.sh":   filepath.Join(home, ".config/neferbar"),
+		"examples/modules/clock.sh": filepath.Join(cwd, "examples/modules"),
+		"./local.sh":                cwd,
+		"date":                      "",
+		"sh -c 'echo hi'":           "",
+		"":                          "",
+		"   ":                       "",
+	} {
+		if got := ScriptDir(command); got != want {
+			t.Errorf("ScriptDir(%q) = %q, want %q", command, got, want)
+		}
+	}
+}

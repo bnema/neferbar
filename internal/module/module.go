@@ -12,6 +12,8 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -219,3 +221,28 @@ func (w *logWriter) Write(p []byte) (int, error) {
 
 // PublishForTest injects a frame as if the script had printed it.
 func PublishForTest(m *Module, frame []byte) { m.publish(frame) }
+
+// ScriptDir is the directory of the program a module's command starts, or ""
+// when it has none to watch: a bare name such as "date" is found through $PATH,
+// and a command that cannot be split into words is left alone. A leading "~/"
+// is the home directory, as the shell reads it, and a relative path is taken
+// from the current directory.
+func ScriptDir(command string) string {
+	fields := strings.Fields(command)
+	if len(fields) == 0 || !strings.Contains(fields[0], "/") {
+		return ""
+	}
+	path := fields[0]
+	if rest, ok := strings.CutPrefix(path, "~/"); ok {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		path = filepath.Join(home, rest)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	return filepath.Dir(abs)
+}

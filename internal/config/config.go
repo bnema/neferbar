@@ -17,6 +17,8 @@ type Bar struct {
 	Scale float64 `toml:"scale"`
 	// Output is the wl_output name; empty lets the compositor choose.
 	Output string `toml:"output"`
+	// Position is the screen edge the bar sits on: "top" or "bottom".
+	Position string `toml:"position"`
 	// Theme is "auto" (the colors of the terminal in use) or the path of a
 	// terminal theme or config file: kitty, foot, ghostty or alacritty.
 	Theme string `toml:"theme"`
@@ -45,7 +47,7 @@ type Config struct {
 func Default() Config {
 	return Config{Bar: Bar{
 		Font: "JetBrainsMono Nerd Font Mono", Size: 14, Scale: 1,
-		Theme: "auto", Accent: 4,
+		Theme: "auto", Accent: 4, Position: "top",
 	}}
 }
 
@@ -95,6 +97,9 @@ func (c *Config) Validate() error {
 		if _, err := ParseColor(col); err != nil {
 			return err
 		}
+	}
+	if b.Position != "top" && b.Position != "bottom" {
+		return fmt.Errorf(`config: bar.position %q must be "top" or "bottom"`, b.Position)
 	}
 	if b.Accent < 0 || b.Accent > 15 {
 		return fmt.Errorf("config: bar.accent %d must be a color number from 0 to 15", b.Accent)

@@ -37,6 +37,7 @@ func TestLoadErrors(t *testing.T) {
 		"bad size":     "[bar]\nsize = 1\n",
 		"bad scale":    "[bar]\nscale = 20\n",
 		"bad color":    "[bar]\nbackground = \"red\"\n",
+		"position":     "[bar]\nposition = \"middle\"\n",
 		"accent low":   "[bar]\naccent = -1\n",
 		"accent high":  "[bar]\naccent = 16\n",
 		"syntax error": "[bar\n",
@@ -67,5 +68,18 @@ func TestAccentDefaultsToBlue(t *testing.T) {
 	c, err = Load(write(t, "[bar]\naccent = 2\n"), true)
 	if err != nil || c.Bar.Accent != 2 {
 		t.Fatalf("accent = %d, err %v; want 2", c.Bar.Accent, err)
+	}
+}
+
+func TestPositionDefaultsToTop(t *testing.T) {
+	for config, want := range map[string]string{
+		"[bar]\nsize = 14\n":             "top",
+		"[bar]\nposition = \"top\"\n":    "top",
+		"[bar]\nposition = \"bottom\"\n": "bottom",
+	} {
+		c, err := Load(write(t, config), true)
+		if err != nil || c.Bar.Position != want {
+			t.Errorf("%q: position = %q, err %v; want %q", config, c.Bar.Position, err, want)
+		}
 	}
 }

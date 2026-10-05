@@ -46,11 +46,14 @@ exec = "~/.config/neferbar/clock.sh"
 
 Add one `[[module]]` block per script. Save the file and the bar updates immediately. If you make a typo, the bar keeps the old config and prints the error.
 
+The bar also watches the folder of each script. Edit a script, or a helper it sources from the same folder, and the modules in that folder restart by themselves. Hidden files (`.name`) and backups (`name~`) are ignored, so an editor's swap file does nothing.
+
 | Setting | Default | Meaning |
 |---|---|---|
 | `bar.font` | `JetBrainsMono Nerd Font Mono` | A font family known to fontconfig (`fc-list`). |
 | `bar.size` | `14` | Text size in logical pixels. |
 | `bar.scale` | `1.0` | Extra zoom on top of the monitor scale. |
+| `bar.position` | `top` | `top` or `bottom`: the screen edge the bar sits on. Applies live. |
 | `bar.output` | any | A monitor name such as `HDMI-A-1`. Needs a restart. |
 | `bar.theme` | `auto` | `auto` reads the colors of the terminal you use. Or the path of a theme file (see Colors). |
 | `bar.accent` | `4` | Which of the theme's 16 colors (0-15) the highlights use. 4 is the ANSI blue; try 2 (green), 6 (cyan) or 5 (magenta) to match your theme. |
