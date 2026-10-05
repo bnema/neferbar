@@ -87,6 +87,7 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+	seen := map[string]bool{}
 	for i := range c.Module {
 		m := &c.Module[i]
 		if m.Exec == "" {
@@ -95,6 +96,10 @@ func (c *Config) Validate() error {
 		if m.Name == "" {
 			m.Name = fmt.Sprintf("module%d", i+1)
 		}
+		if seen[m.Name] {
+			return fmt.Errorf("config: two modules are named %q", m.Name)
+		}
+		seen[m.Name] = true
 		switch m.Zone {
 		case "left", "center", "right":
 		default:

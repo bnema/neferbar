@@ -70,18 +70,22 @@ type Bar struct {
 	frame       gpu.Frame
 	watched     [gpu.SlotCount]int // watched eventfds, -1 when none
 
-	mods   []*module.Module
-	lay    *layout.Layout
-	modCh  chan struct{}
-	Stats  Stats
-	fatal  error
-	closed bool
+	runners []runner
+	mods    []*module.Module // the modules of runners, in config order
+	runCtx  context.Context
+	lay     *layout.Layout
+	modCh   chan struct{}
+	cfgPath string
+	cfgCh   chan config.Config
+	Stats   Stats
+	fatal   error
+	closed  bool
 }
 
 // New builds a bar from a validated config.
 // display names the Wayland socket; empty uses $WAYLAND_DISPLAY.
 func New(cfg config.Config, log *slog.Logger, display string) (*Bar, error) {
-	b := &Bar{cfg: cfg, log: log, display: display, modCh: make(chan struct{}, 1)}
+	b := &Bar{cfg: cfg, log: log, display: display, modCh: make(chan struct{}, 1), cfgCh: make(chan config.Config, 1)}
 	var err error
 	if b.fg, err = config.ParseColor(cfg.Bar.Foreground); err != nil {
 		return nil, err
@@ -98,11 +102,101 @@ func New(cfg config.Config, log *slog.Logger, display string) (*Bar, error) {
 	for i := range b.watched {
 		b.watched[i] = -1
 	}
-	zones := map[string]module.Zone{"left": module.Left, "center": module.Center, "right": module.Right}
-	for _, m := range cfg.Module {
-		b.mods = append(b.mods, module.New(m.Name, zones[m.Zone], m.Exec, b.modCh, log))
-	}
 	return b, nil
+}
+
+// WatchConfig makes Run reload the config file at path when it changes. Call
+// it before Run.
+func (b *Bar) WatchConfig(path string) { b.cfgPath = path }
+
+// runner is one started module and how to stop it.
+type runner struct {
+	cfg    config.Module
+	m      *module.Module
+	cancel context.CancelFunc
+}
+
+var zones = map[string]module.Zone{"left": module.Left, "center": module.Center, "right": module.Right}
+
+// syncModules makes the running modules match want. A module with the same
+// name, zone and command keeps running; every other one is stopped, and a new
+// or changed one is started.
+func (b *Bar) syncModules(want []config.Module) {
+	old := make(map[string]runner, len(b.runners))
+	for _, r := range b.runners {
+		old[r.cfg.Name] = r
+	}
+	next := make([]runner, 0, len(want))
+	for _, w := range want {
+		if r, ok := old[w.Name]; ok {
+			delete(old, w.Name)
+			if r.cfg == w {
+				next = append(next, r)
+				continue
+			}
+			r.cancel()
+		}
+		ctx, cancel := context.WithCancel(b.runCtx)
+		m := module.New(w.Name, zones[w.Zone], w.Exec, b.modCh, b.log)
+		go m.Run(ctx)
+		next = append(next, runner{cfg: w, m: m, cancel: cancel})
+	}
+	for _, r := range old {
+		r.cancel()
+	}
+	b.runners = next
+	b.mods = b.mods[:0]
+	for _, r := range next {
+		b.mods = append(b.mods, r.m)
+	}
+	if b.lay != nil {
+		b.lay.SetModules(b.mods)
+	}
+}
+
+// applyConfig switches to next. Nothing changes if it cannot be applied.
+func (b *Bar) applyConfig(next config.Config) {
+	old := b.cfg
+	fg, err := config.ParseColor(next.Bar.Foreground)
+	if err != nil {
+		b.log.Warn("config not applied", "err", err)
+		return
+	}
+	bg, err := config.ParseColor(next.Bar.Background)
+	if err != nil {
+		b.log.Warn("config not applied", "err", err)
+		return
+	}
+	fontChanged := next.Bar.Font != old.Bar.Font
+	reg, bold := b.regularPath, b.boldPath
+	if fontChanged {
+		if reg, err = glyph.FindFont(next.Bar.Font, false); err != nil {
+			b.log.Warn("config not applied", "err", err)
+			return
+		}
+		if bold, err = glyph.FindFont(next.Bar.Font, true); err != nil {
+			bold = reg
+		}
+	}
+	if next.Bar.Output != old.Bar.Output {
+		b.log.Warn("bar.output changed: restart the bar to move it", "from", old.Bar.Output, "to", next.Bar.Output)
+		next.Bar.Output = old.Bar.Output
+	}
+	b.cfg = next
+	b.regularPath, b.boldPath = reg, bold
+	b.syncModules(next.Module)
+	if fg != b.fg || bg != b.bg {
+		b.fg, b.bg = fg, bg
+		if b.lay != nil {
+			b.lay.SetColors(fg, bg)
+		}
+	}
+	b.dirty = true
+	if fontChanged || next.Bar.Size != old.Bar.Size || next.Bar.Scale != old.Bar.Scale {
+		b.facePx = -1 // reconcile rebuilds the font, and the surface if its height changed
+		b.reconcile()
+	}
+	b.log.Info("config reloaded")
 }
 
 // Run connects to the compositor and serves until ctx ends or the surface is
@@ -122,8 +216,14 @@ func (b *Bar) Run(ctx context.Context) (err error) {
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	for _, m := range b.mods {
-		go m.Run(runCtx)
+	b.runCtx = runCtx
+	b.syncModules(b.cfg.Module)
+	if b.cfgPath != "" {
+		go func() {
+			if err := config.Watch(runCtx, b.cfgPath, b.cfg, b.cfgCh, b.log); err != nil {
+				b.log.Warn("config reload is off", "err", err)
+			}
+		}()
 	}
 	for !b.closed {
 		select {
@@ -135,6 +235,8 @@ func (b *Bar) Run(ctx context.Context) (err error) {
 			}
 		case <-b.modCh:
 			b.Stats.ModuleWake++
+		case next := <-b.cfgCh:
+			b.applyConfig(next)
 		}
 		if b.fatal != nil {
 			return b.fatal

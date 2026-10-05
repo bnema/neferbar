@@ -38,6 +38,15 @@ zone = "center"      # left | center | right
 exec = "clock.sh"
 ```
 
+## Live reload
+
+The config file is watched, including editors that save through a temp file and symlinked dotfiles. A valid change applies at once; a broken, invalid or deleted file is logged and the running config stays.
+
+- Colors, font, size and scale apply live; the bar rebuilds its font and recreates the surface if its height changes.
+- Modules are matched by `name`: an unchanged one keeps running, a removed one is stopped, a new or changed one is started.
+- `bar.output` needs a restart, and the bar says so.
+- A module script that you edit on disk is picked up when the script restarts, not before.
+
 ## Modules
 
 A module is a long-running `/bin/sh -c` command. Its stdout is ANSI text (SGR colors, bold, inverse, dim). A frame ends at a newline or a form feed, and each frame replaces the previous one. Only the latest frame matters: a script that prints faster than the bar draws overwrites its pending frame.

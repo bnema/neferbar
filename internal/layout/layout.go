@@ -30,18 +30,50 @@ type Layout struct {
 // New builds a layout for a row of cols cells.
 func New(cols int, fg, bg [3]uint8, mods []*module.Module) *Layout {
 	l := &Layout{cols: cols, fg: fg, bg: bg, row: make([]gpu.Cell, cols)}
-	for _, m := range mods {
-		s := &Source{
-			M:      m,
-			screen: vt.NewScreen(cols, 1),
-			frame:  make([]byte, 0, module.MaxFrame),
-			input:  make([]byte, 0, module.MaxFrame+16),
-			cells:  make([]gpu.Cell, 0, cols),
-		}
-		s.screen.Write([]byte("\x1b[?7l")) // no autowrap: long text clips
-		l.sources = append(l.sources, s)
-	}
+	l.SetModules(mods)
 	return l
+}
+
+func newSource(m *module.Module, cols int) *Source {
+	s := &Source{
+		M:      m,
+		screen: vt.NewScreen(cols, 1),
+		frame:  make([]byte, 0, module.MaxFrame),
+		input:  make([]byte, 0, module.MaxFrame+16),
+		cells:  make([]gpu.Cell, 0, cols),
+	}
+	s.screen.Write([]byte("\x1b[?7l")) // no autowrap: long text clips
+	return s
+}
+
+// SetModules replaces the module list. A module that is already shown keeps
+// its parsed text; new ones start empty. The order of mods is the order
+// within each zone.
+func (l *Layout) SetModules(mods []*module.Module) {
+	old := make(map[*module.Module]*Source, len(l.sources))
+	for _, s := range l.sources {
+		old[s.M] = s
+	}
+	l.sources = make([]*Source, 0, len(mods))
+	for _, m := range mods {
+		if s, ok := old[m]; ok {
+			l.sources = append(l.sources, s)
+		} else {
+			l.sources = append(l.sources, newSource(m, l.cols))
+		}
+	}
+}
+
+// SetColors changes the default colors and reparses every module's last frame.
+func (l *Layout) SetColors(fg, bg [3]uint8) {
+	l.fg, l.bg = fg, bg
+	for _, s := range l.sources {
+		if s.failed {
+			s.cells = l.marker(s.cells[:0], s.M.Name)
+		} else if len(s.frame) > 0 {
+			s.parse(fg, bg)
+		}
+	}
 }
 
 // Resize changes the row width and reparses the last frame of every module.

@@ -53,6 +53,7 @@ func run(ctx context.Context, log *slog.Logger, cfgPath, display, pprofAddr stri
 	if err != nil {
 		return err
 	}
+	b.WatchConfig(cfgPath)
 	if memStats > 0 {
 		go logMemStats(ctx, log, memStats)
 	}
