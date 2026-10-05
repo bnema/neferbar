@@ -1,0 +1,21 @@
+[bar]
+font = "JetBrainsMono Nerd Font Mono"
+size = 14
+scale = 1.0
+background = "#1e1e2e"
+foreground = "#cdd6f4"
+
+[[module]]
+name = "static"
+zone = "left"
+exec = "examples/modules/static.sh"
+
+[[module]]
+name = "clock"
+zone = "center"
+exec = "examples/modules/clock.sh"
+
+[[module]]
+name = "rainbow"
+zone = "right"
+exec = "examples/modules/rainbow.sh 60 30"
