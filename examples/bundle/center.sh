@@ -10,7 +10,9 @@
 
 draw() {
 	local app
-	app=$(jq -r '.window.app_id // empty' "$NEFERWL_STATE" 2>/dev/null) || return
+	# An app id is chosen by the application: drop control characters, which
+	# would otherwise reach the bar as escape sequences.
+	app=$(jq -r '(.window.app_id // empty) | explode | map(select(. >= 32 and . != 127)) | implode' "$NEFERWL_STATE" 2>/dev/null) || return
 	if [ -n "$app" ]; then
 		printf '%s%s%s %s%s%s\f' "$(bg "$BAR")" "$(fg "$NEFERBAR_COLOR3")" "$ICON_APP" "$(fg "$NEFERBAR_FOREGROUND")" "$app" "$RESET"
 	else

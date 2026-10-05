@@ -9,7 +9,7 @@
 [bar]
 font = "JetBrainsMono Nerd Font Mono"   # any "Mono" Nerd Font
 size = 14
-theme = "auto"                          # the colors of your terminal, or the path of a theme file
+theme = "auto"                          # the colors of the terminal in $TERMINAL, or the path of a theme file
 
 [[module]]
 name = "workspaces"

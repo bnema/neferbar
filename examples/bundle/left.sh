@@ -24,10 +24,13 @@ draw() {
 		   | "\($n) \($here | length) \([$here[] | select(.stash_count > 0)] | length)")' \
 		"$NEFERWL_STATE" 2>/dev/null) || return
 	read -r active count <<<"$(head -1 <<<"$data")"
-	[ -n "$active" ] || return
+	# The state file is data, not code: bash arithmetic runs command
+	# substitutions, so only digits may reach it.
+	[[ $active =~ ^[0-9]+$ && $count =~ ^[0-9]+$ ]] || return
 
 	line="$(bg "$ACCENT")$(fg "$(ink "$ACCENT")")$BOLD  $active $RESET$(fade "$ACCENT" "$BAR")$(bg "$BAR")"
 	while read -r n w s; do
+		[[ $n =~ ^[0-9]+$ && $w =~ ^[0-9]+$ && $s =~ ^[0-9]+$ ]] || continue
 		pips=""
 		((w > 0)) && printf -v pips "$DOT%.0s" $(seq 1 $((w > 4 ? 4 : w)))
 		if ((n == active)); then

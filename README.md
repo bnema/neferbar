@@ -66,7 +66,16 @@ theme = "auto"                                  # the terminal you use
 theme = "~/.config/kitty/themes/mytheme.conf"   # or one file
 ```
 
-`auto` picks the terminal named by `$TERMINAL` (or the first entry of `xdg-terminals.list`), and otherwise the first of kitty, ghostty, foot and alacritty that has a config with colors. A file can be any of those formats, and the bar recognizes it by its content. Includes and `theme =` names are followed. Colors the file does not set come from a built-in dark theme.
+`auto` reads the theme of the terminal named by the **`$TERMINAL`** environment variable, and nothing else. It knows kitty, ghostty, foot and alacritty (`TERMINAL=kitty`, or a path such as `/usr/bin/foot`). A theme file can be any of those formats, and the bar recognizes it by its content. Includes and ghostty `theme =` names are followed. Colors the file does not set come from a built-in dark theme.
+
+**Set `$TERMINAL` for your whole session**, not only in a shell. A variable you `set -x` in an open terminal is not seen by programs your compositor starts. The simplest place is a systemd user environment file, read when a session starts, whatever your shell is:
+
+```
+# ~/.config/environment.d/10-terminal.conf
+TERMINAL=kitty
+```
+
+Then start a new session. If `$TERMINAL` is missing, the bar says so in its log and uses the built-in colors.
 
 The bar watches every file it read: change your terminal's theme and the bar changes with it. If the theme cannot be read, the bar uses the built-in colors and says why in its log.
 
