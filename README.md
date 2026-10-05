@@ -4,9 +4,7 @@ A dead simple status bar for Wayland: **one line of terminal text, nothing else.
 
 Each part of the bar is a script. A script prints text, and neferbar shows it. If you can write `echo`, you can write a module.
 
-```
- workspace 2   firefox                     14:32:07                     cpu 12%  vol 40%  bat 88%
-```
+![neferbar showing a workspace number, an app name, a clock and system stats, with Nerd Font icons](docs/img/bar.png)
 
 - **Text only.** ASCII, Unicode and Nerd Font icons. No images, no widgets, no clicks.
 - **Exactly one character high.** The bar is as tall as a terminal row, and it follows your monitor's scale.
@@ -117,13 +115,15 @@ Italic, bold and bold italic use the font's own files when it has them.
 
 ### Icons
 
-Nerd Font icons are ordinary characters. Print them from a script with their UTF-8 bytes:
+Nerd Font icons are ordinary characters, but GitHub cannot draw them in a code block, so the examples here write them as escape sequences. Give `printf` the icon's code point:
 
 ```sh
-printf '\357\200\227 %s\n' "$(date +%H:%M)"     # clock icon
+printf '\Uf017 %s\n' "$(date +%H:%M)"      # clock icon (U+F017)
 ```
 
-Find icon codes at <https://www.nerdfonts.com/cheat-sheet>.
+`\U` works in bash. Some minimal shells do not support it; the UTF-8 bytes work everywhere: `printf '\357\200\227 %s\n' "$(date +%H:%M)"`.
+
+Find icon names and code points at <https://www.nerdfonts.com/cheat-sheet>. In an editor with a Nerd Font you can also paste the icon itself into the script.
 
 ### Animation
 
