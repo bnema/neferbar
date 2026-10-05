@@ -17,7 +17,10 @@ type Bar struct {
 	Scale float64 `toml:"scale"`
 	// Output is the wl_output name; empty lets the compositor choose.
 	Output string `toml:"output"`
-	// Background and Foreground are #rrggbb.
+	// Theme is "auto" (the colors of the terminal in use) or the path of a
+	// terminal theme or config file: kitty, foot, ghostty or alacritty.
+	Theme string `toml:"theme"`
+	// Background and Foreground, as #rrggbb, override the theme's.
 	Background string `toml:"background"`
 	Foreground string `toml:"foreground"`
 }
@@ -39,7 +42,7 @@ type Config struct {
 func Default() Config {
 	return Config{Bar: Bar{
 		Font: "JetBrainsMono Nerd Font Mono", Size: 14, Scale: 1,
-		Background: "#1e1e2e", Foreground: "#cdd6f4",
+		Theme: "auto",
 	}}
 }
 
@@ -83,9 +86,15 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config: bar.scale %v out of range 0.5..8", b.Scale)
 	}
 	for _, col := range []string{b.Background, b.Foreground} {
+		if col == "" {
+			continue // taken from the theme
+		}
 		if _, err := ParseColor(col); err != nil {
 			return err
 		}
+	}
+	if b.Theme == "" {
+		return fmt.Errorf("config: bar.theme is empty; use \"auto\" or the path of a theme file")
 	}
 	seen := map[string]bool{}
 	for i := range c.Module {
