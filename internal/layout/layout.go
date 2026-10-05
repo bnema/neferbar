@@ -234,10 +234,15 @@ func (l *Layout) Compose() []gpu.Cell {
 			x += copy(l.row[x:limit], s.cells)
 		}
 	}
-	// Center zone in the free gap.
+	// Center zone: on the middle of the bar, and only as far from it as the
+	// left and right zones force. Centering it in the space they leave would
+	// shift it whenever the two zones differ in width.
 	gap := l.cols - right - left
 	if center = min(center, gap); center > 0 {
-		x, limit = left+(gap-center)/2, left+(gap-center)/2+center
+		start := (l.cols - center) / 2          // exactly on the middle
+		start = max(start, left)                // not over the left zone
+		start = min(start, l.cols-right-center) // not over the right zone
+		x, limit = start, start+center
 		for _, s := range l.sources {
 			if s.M.Zone == module.Center && x < limit {
 				x += copy(l.row[x:limit], s.cells)

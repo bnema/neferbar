@@ -184,3 +184,40 @@ func TestBrokenEscapeDoesNotSwallowNextFrames(t *testing.T) {
 		}
 	}
 }
+
+// The center zone sits on the middle of the bar, not on the middle of the
+// space left between a wide left zone and a narrow right one.
+func TestCenterIsOnTheMiddleOfTheBar(t *testing.T) {
+	l, m := newTestLayout(40)
+	publish(m[0], "LLLLLLLLLL") // 10 cells on the left
+	publish(m[1], "cccc")       // 4 in the middle
+	publish(m[2], "RRRR")       // 4 on the right
+	l.Update()
+	got := rowText(l)
+	if i := indexOf(got, "cccc"); i != 18 {
+		t.Fatalf("center starts at cell %d, want 18 (the bar is 40 cells wide): %q", i, got)
+	}
+}
+
+// When the middle of the bar is taken, the center moves just enough to fit.
+func TestCenterMovesOnlyAsFarAsNeeded(t *testing.T) {
+	l, m := newTestLayout(40)
+	publish(m[0], "LLLLLLLLLLLLLLLLLLLL") // 20 cells: reaches past the ideal start of 18
+	publish(m[1], "cccc")
+	publish(m[2], "RRRR")
+	l.Update()
+	got := rowText(l)
+	if i := indexOf(got, "cccc"); i != 20 {
+		t.Fatalf("center starts at cell %d, want 20 (right after the left zone): %q", i, got)
+	}
+	// And the other way round: a wide right zone pushes it left.
+	l, m = newTestLayout(40)
+	publish(m[0], "LL")
+	publish(m[1], "cccc")
+	publish(m[2], "RRRRRRRRRRRRRRRRRRRR") // 20 cells: the center must end by cell 20
+	l.Update()
+	got = rowText(l)
+	if i := indexOf(got, "cccc"); i != 16 {
+		t.Fatalf("center starts at cell %d, want 16 (ending where the right zone starts): %q", i, got)
+	}
+}
