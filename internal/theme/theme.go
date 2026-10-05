@@ -60,6 +60,19 @@ func (t Theme) Fill(def Theme) Theme {
 	return t
 }
 
+// dedupFiles removes repeated entries, keeping the first of each.
+func dedupFiles(files []string) []string {
+	seen := make(map[string]bool, len(files))
+	out := files[:0:0]
+	for _, f := range files {
+		if !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // Defines reports how many of the 18 colors the source set.
 func (t Theme) Defines() int {
 	n := 0
@@ -142,6 +155,7 @@ func Load(path string) (Theme, error) {
 		return Theme{}, fmt.Errorf("theme: %s defines no colors (read as %s)", path, f.name)
 	}
 	t.Source = fmt.Sprintf("%s (%s)", path, f.name)
+	t.Files = dedupFiles(t.Files)
 	return t, nil
 }
 
@@ -176,7 +190,7 @@ var formats = map[string]format{}
 func init() {
 	formats["kitty"] = format{"kitty", func(p string) (Theme, error) { return loadKitty(p, 0) }}
 	formats["foot"] = format{"foot", func(p string) (Theme, error) { return loadFoot(p, 0) }}
-	formats["ghostty"] = format{"ghostty", loadGhostty}
+	formats["ghostty"] = format{"ghostty", func(p string) (Theme, error) { return loadGhostty(p, 0) }}
 	formats["alacritty"] = format{"alacritty", func(p string) (Theme, error) { return loadAlacritty(p, 0) }}
 }
 
@@ -185,18 +199,19 @@ func init() {
 // path is taken from baseDir. Colors the source leaves out come from Default.
 func Resolve(spec, baseDir string, env Env) (Theme, error) {
 	def := Default()
+	var t Theme
+	var err error
 	if spec == "auto" {
-		t, err := Auto(env)
-		if err != nil {
-			return def, err
-		}
-		return t.Fill(def), nil
+		t, err = Auto(env)
+	} else {
+		t, err = Load(expand(spec, baseDir))
 	}
-	t, err := Load(expand(spec, baseDir))
 	if err != nil {
 		return def, err
 	}
-	return t.Fill(def), nil
+	t = t.Fill(def)
+	t.Files = dedupFiles(t.Files)
+	return t, nil
 }
 
 // Mix returns a blended with b: t=0 is a, t=1 is b.

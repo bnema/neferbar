@@ -2,8 +2,6 @@ package theme
 
 import (
 	"bufio"
-	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -29,6 +27,15 @@ func lines(path string) ([]string, error) {
 	return out, sc.Err()
 }
 
+// splitFirstWord splits "key   value" at the first run of spaces or tabs.
+func splitFirstWord(l string) (key, val string) {
+	i := strings.IndexAny(l, " \t")
+	if i < 0 {
+		return l, ""
+	}
+	return l[:i], strings.TrimSpace(l[i:])
+}
+
 // ---- kitty: "key value" lines, "include file" ------------------------------
 
 func loadKitty(path string, depth int) (Theme, error) {
@@ -42,8 +49,7 @@ func loadKitty(path string, depth int) (Theme, error) {
 		if strings.HasPrefix(l, "#") {
 			continue
 		}
-		key, val, _ := strings.Cut(l, " ")
-		val = strings.TrimSpace(val)
+		key, val := splitFirstWord(l)
 		switch {
 		case key == "include" && depth < maxDepth:
 			inc, err := loadKitty(expand(val, filepath.Dir(path)), depth+1)
@@ -158,7 +164,7 @@ func ghosttyDirs(config string) []string {
 	}
 }
 
-func loadGhostty(path string) (Theme, error) {
+func loadGhostty(path string, depth int) (Theme, error) {
 	var own Theme
 	themeName := ""
 	ls, err := lines(path)
@@ -201,8 +207,8 @@ func loadGhostty(path string) (Theme, error) {
 	// The named theme is applied first; the config's own colors win over it.
 	var t Theme
 	if themeName != "" {
-		if file := findGhosttyTheme(path, themeName); file != "" {
-			if th, err := loadGhostty(file); err == nil {
+		if file := findGhosttyTheme(path, themeName); file != "" && depth < maxDepth {
+			if th, err := loadGhostty(file, depth+1); err == nil {
 				t.overlay(th)
 			}
 		}
@@ -288,10 +294,4 @@ func loadAlacritty(path string, depth int) (Theme, error) {
 func fileExists(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && !st.IsDir()
-}
-
-var errNoTerminal = errors.New("theme: no terminal config found")
-
-func noTheme(tried []string) error {
-	return fmt.Errorf("%w (looked for %s)", errNoTerminal, strings.Join(tried, ", "))
 }

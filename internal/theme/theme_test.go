@@ -3,6 +3,7 @@ package theme
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -136,34 +137,70 @@ func fakeEnv(dir string, vars map[string]string) Env {
 	return Env{ConfigDir: dir, Getenv: func(k string) string { return vars[k] }}
 }
 
-func TestAutoPrefersTheTerminalInUse(t *testing.T) {
+func TestAutoReadsOnlyTheTerminalVariable(t *testing.T) {
 	d := t.TempDir()
 	put(t, d, "kitty/kitty.conf", "color1 #000001\n")
 	put(t, d, "foot/foot.ini", "[colors]\nregular1 = fd4663\n")
-	got, err := Auto(fakeEnv(d, map[string]string{"TERMINAL": "/usr/bin/foot"}))
-	if err != nil || got.Palette[1] != red {
-		t.Fatalf("$TERMINAL=foot: err=%v c1=%v", err, got.Palette[1])
+	for _, value := range []string{"foot", "/usr/bin/foot", "/usr/bin/foot --server", "  foot  "} {
+		got, err := Auto(fakeEnv(d, map[string]string{"TERMINAL": value}))
+		if err != nil || got.Palette[1] != red {
+			t.Errorf("TERMINAL=%q: err=%v c1=%v", value, err, got.Palette[1])
+		}
 	}
-	put(t, d, "xdg-terminals.list", "# comment\nkitty.desktop\n")
-	got, _ = Auto(fakeEnv(d, nil))
-	if got.Palette[1] != (RGB{0, 0, 1}) {
-		t.Fatalf("xdg-terminals.list=kitty: c1=%v", got.Palette[1])
+	// A config for another terminal must not be picked up by accident.
+	if got, _ := Auto(fakeEnv(d, map[string]string{"TERMINAL": "kitty"})); got.Palette[1] != (RGB{0, 0, 1}) {
+		t.Errorf("TERMINAL=kitty read the wrong file: c1=%v", got.Palette[1])
 	}
 }
 
-func TestAutoFallsBackToTheFirstConfigWithColors(t *testing.T) {
+func TestAutoErrorsAreOneClearSentence(t *testing.T) {
 	d := t.TempDir()
-	put(t, d, "kitty/kitty.conf", "font_size 12\n") // exists but has no colors
-	put(t, d, "alacritty/alacritty.toml", "[colors.normal]\nred = '#fd4663'\n")
-	got, err := Auto(fakeEnv(d, nil))
-	if err != nil || got.Palette[1] != red {
-		t.Fatalf("err=%v c1=%v", err, got.Palette[1])
+	put(t, d, "kitty/kitty.conf", "font_size 12\n") // no colors
+	cases := map[string]struct{ env, contains string }{
+		"unset":     {"", "needs $TERMINAL"},
+		"blank":     {"   ", "needs $TERMINAL"},
+		"unknown":   {"xterm", "kitty, ghostty, foot and alacritty only"},
+		"no config": {"foot", "does not exist"},
+		"no colors": {"kitty", "sets no colors"},
+	}
+	for name, c := range cases {
+		_, err := Auto(fakeEnv(d, map[string]string{"TERMINAL": c.env}))
+		if err == nil || !strings.Contains(err.Error(), c.contains) {
+			t.Errorf("%s: err = %v, want it to mention %q", name, err, c.contains)
+		}
+	}
+	// The unset message tells the user where to put the variable.
+	_, err := Auto(fakeEnv(d, nil))
+	if err == nil || !strings.Contains(err.Error(), "environment.d") {
+		t.Errorf("unset message must name environment.d: %v", err)
 	}
 }
 
-func TestAutoWithNoTerminalIsAnError(t *testing.T) {
-	if _, err := Auto(fakeEnv(t.TempDir(), nil)); err == nil {
-		t.Fatal("no terminal config must be an error the caller can report")
+func TestGhosttySelfReferenceTerminates(t *testing.T) {
+	d := t.TempDir()
+	self := filepath.Join(d, "config")
+	put(t, d, "config", "theme = "+self+"\npalette = 1=#fd4663\n")
+	got, err := Load(self)
+	if err != nil || got.Palette[1] != red {
+		t.Fatalf("self-referencing ghostty theme: err=%v c1=%v", err, got.Palette[1])
+	}
+}
+
+func TestKittyKeysSeparatedByATab(t *testing.T) {
+	p := put(t, t.TempDir(), "k.conf", "color1\t#fd4663\nbackground\t\t#070722\n")
+	got, err := Load(p)
+	if err != nil || got.Palette[1] != red || got.Background != bg {
+		t.Fatalf("tab-separated keys: err=%v c1=%v bg=%v", err, got.Palette[1], got.Background)
+	}
+}
+
+func TestFilesAreDeduplicated(t *testing.T) {
+	d := t.TempDir()
+	put(t, d, "t.conf", "color1 #fd4663\n")
+	main := put(t, d, "k.conf", "include t.conf\ninclude t.conf\ninclude t.conf\n")
+	got, err := Load(main)
+	if err != nil || len(got.Files) != 2 {
+		t.Fatalf("Files = %v (err %v), want the config and one include", got.Files, err)
 	}
 }
 
