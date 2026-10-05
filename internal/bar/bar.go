@@ -75,13 +75,14 @@ type Bar struct {
 	frame       gpu.Frame
 	watched     [gpu.SlotCount]int // watched eventfds, -1 when none
 
-	runners []runner
-	mods    []*module.Module // the modules of runners, in config order
-	runCtx  context.Context
-	lay     *layout.Layout
-	modCh   chan struct{}
-	cfgPath string
-	cfgCh   chan config.Config
+	runners   []runner
+	mods      []*module.Module // the modules of runners, in config order
+	runCtx    context.Context
+	cancelRun context.CancelFunc
+	lay       *layout.Layout
+	modCh     chan struct{}
+	cfgPath   string
+	cfgCh     chan config.Config
 
 	theme       theme.Theme
 	themeCh     chan struct{}
@@ -96,6 +97,16 @@ type Bar struct {
 	settling bool
 	settleC  <-chan time.Time
 
+	// fresh is true from the moment a layer surface is created until a renderer
+	// exists for it. A new surface reports scale 1 until the compositor says
+	// otherwise, so its first geometry is not trusted until the events settle.
+	fresh bool
+	// asked is the last (height, scale) a surface was recreated for. Asking for
+	// the same pair twice means the compositor will not give that height, and
+	// the bar takes what it gets instead of looping.
+	askedH     int32
+	askedScale float64
+
 	// mappedW is the logical width the current layer surface was first drawn at.
 	// It resets to 0 when the surface is recreated.
 	mappedW int32
@@ -104,10 +115,12 @@ type Bar struct {
 	closed  bool
 }
 
-// New builds a bar from a validated config.
-// display names the Wayland socket; empty uses $WAYLAND_DISPLAY.
-func New(cfg config.Config, log *slog.Logger, display string) (*Bar, error) {
-	b := &Bar{cfg: cfg, log: log, display: display, modCh: make(chan struct{}, 1), cfgCh: make(chan config.Config, 1),
+// New builds a bar from a validated config. cfgPath is the file the config came
+// from: relative theme paths are read from its directory, and the bar reloads
+// it when it changes (empty: no reload). display names the Wayland socket;
+// empty uses $WAYLAND_DISPLAY.
+func New(cfg config.Config, cfgPath string, log *slog.Logger, display string) (*Bar, error) {
+	b := &Bar{cfg: cfg, cfgPath: cfgPath, log: log, display: display, modCh: make(chan struct{}, 1), cfgCh: make(chan config.Config, 1),
 		themeCh: make(chan struct{}, 1)}
 	var err error
 	if err = b.loadTheme(); err != nil {
@@ -145,7 +158,7 @@ func (b *Bar) loadTheme() error {
 	}
 	th, err := theme.Resolve(b.cfg.Bar.Theme, base, theme.SystemEnv())
 	if err != nil {
-		b.log.Warn("theme not found; using the built-in colors", "theme", b.cfg.Bar.Theme, "err", err)
+		b.log.Warn("using the built-in colors: "+err.Error(), "theme", b.cfg.Bar.Theme)
 	} else {
 		b.log.Info("theme", "source", th.Source)
 	}
@@ -178,7 +191,11 @@ func (b *Bar) watchTheme() {
 	ctx, cancel := context.WithCancel(b.runCtx)
 	b.themeCancel = cancel
 	for _, f := range b.theme.Files {
-		go func() { _ = fswatch.Watch(ctx, f, 150*time.Millisecond, b.themeCh) }()
+		go func() {
+			if err := fswatch.Watch(ctx, f, 150*time.Millisecond, b.themeCh); err != nil {
+				b.log.Warn("cannot watch a theme file; edits to it need a restart", "file", f, "err", err)
+			}
+		}()
 	}
 }
 
@@ -194,16 +211,17 @@ func (b *Bar) reloadTheme() {
 		return
 	}
 	if th.Equal(b.theme) {
+		// Same colors, but the files that make them up may have changed.
+		if !slices.Equal(th.Files, b.theme.Files) {
+			b.theme.Files = th.Files
+			b.watchTheme()
+		}
 		return
 	}
 	b.log.Info("theme changed", "source", th.Source)
 	b.setTheme(th)
 	b.syncModules(b.cfg.Module) // scripts get the new colors in their environment
 }
-
-// WatchConfig makes Run reload the config file at path when it changes. Call
-// it before Run.
-func (b *Bar) WatchConfig(path string) { b.cfgPath = path }
 
 // runner is one started module and how to stop it.
 type runner struct {
@@ -236,7 +254,7 @@ func (b *Bar) syncModules(want []config.Module) {
 		ctx, cancel := context.WithCancel(b.runCtx)
 		m := module.New(w.Name, zones[w.Zone], w.Exec, b.modCh, b.log)
 		m.Env = b.env
-		go m.Run(ctx)
+		m.Start(ctx)
 		next = append(next, runner{cfg: w, env: b.env, m: m, cancel: cancel})
 	}
 	for _, r := range old {
@@ -299,7 +317,7 @@ func (b *Bar) Run(ctx context.Context) (err error) {
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	b.runCtx = runCtx
+	b.runCtx, b.cancelRun = runCtx, cancel
 	b.watchTheme()
 	b.syncModules(b.cfg.Module)
 	if b.cfgPath != "" {
@@ -396,6 +414,7 @@ func (b *Bar) createSurface(h int32) error {
 	}
 	b.surf, b.sid = surf, surf.ID()
 	b.mappedW = 0
+	b.fresh = true
 	b.configured, b.canPresent = false, false
 	return nil
 }
@@ -503,7 +522,14 @@ func (b *Bar) reconcile() {
 	}
 	// The bar is one cell high: logical height = ceil(cell / scale).
 	wantH := int32(math.Ceil(float64(b.face.CellH)/scale - 1e-9))
+	if h != wantH && b.askedH == wantH && b.askedScale == scale {
+		// Already asked for exactly this and got something else: the compositor
+		// clamps the height. Use what we have rather than asking forever.
+		b.log.Warn("the compositor gave another bar height than asked; using it", "asked", wantH, "got", h)
+		wantH = h
+	}
 	if h != wantH {
+		b.askedH, b.askedScale = wantH, scale
 		b.log.Info("recreating layer surface", "height", wantH, "scale", scale)
 		b.dropRenderer()
 		if err := b.surf.Close(); err != nil {
@@ -557,6 +583,7 @@ func (b *Bar) reconcile() {
 		return
 	}
 	b.rend, b.mappedW = rend, w
+	b.fresh = false
 	b.Stats.Rebuilds++
 	if b.lay == nil {
 		b.lay = layout.New(rend.Cols(), b.fg, b.bg, b.pal, b.mods)
@@ -608,6 +635,17 @@ func (b *Bar) fail(err error) {
 
 func (b *Bar) shutdown() error {
 	var errs []error
+	// Stop the scripts first: cancel asks them to end, Wait gives them time to,
+	// so none outlives the bar.
+	if b.cancelRun != nil {
+		b.cancelRun()
+	}
+	for _, r := range b.runners {
+		r.cancel()
+	}
+	for _, r := range b.runners {
+		r.m.Wait(3 * time.Second)
+	}
 	b.dropRenderer()
 	b.face.Close()
 	if b.node != nil {
@@ -628,7 +666,7 @@ const settleDelay = 60 * time.Millisecond
 // The first report builds at once, because there is nothing on screen yet.
 // Later ones wait for the dust to settle, and nothing is drawn meanwhile.
 func (b *Bar) geometryChanged() {
-	if b.rend == nil {
+	if b.rend == nil && !b.fresh {
 		b.reconcile()
 		return
 	}

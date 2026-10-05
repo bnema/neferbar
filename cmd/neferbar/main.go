@@ -49,11 +49,10 @@ func run(ctx context.Context, log *slog.Logger, cfgPath, display, pprofAddr stri
 			return err
 		}
 	}
-	b, err := bar.New(cfg, log, display)
+	b, err := bar.New(cfg, cfgPath, log, display)
 	if err != nil {
 		return err
 	}
-	b.WatchConfig(cfgPath)
 	if memStats > 0 {
 		go logMemStats(ctx, log, memStats)
 	}
@@ -72,6 +71,11 @@ func servePprof(ctx context.Context, log *slog.Logger, addr string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("pprof listen: %w", err)
+	}
+	// "localhost" is resolved by the system: trust the address actually bound.
+	if tcp, ok := ln.Addr().(*net.TCPAddr); !ok || !tcp.IP.IsLoopback() {
+		_ = ln.Close()
+		return fmt.Errorf("pprof address %q is not loopback; refusing to serve profiles on it", addr)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
