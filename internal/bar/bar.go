@@ -84,6 +84,11 @@ type Bar struct {
 	cfgPath   string
 	cfgCh     chan config.Config
 
+	// scriptCh carries the directory of a script that changed on disk.
+	scriptCh     chan string
+	scriptCancel context.CancelFunc
+	stale        map[string]bool // directories whose modules restart at the next syncModules
+
 	theme       theme.Theme
 	themeCh     chan struct{}
 	themeCancel context.CancelFunc
@@ -121,7 +126,7 @@ type Bar struct {
 // empty uses $WAYLAND_DISPLAY.
 func New(cfg config.Config, cfgPath string, log *slog.Logger, display string) (*Bar, error) {
 	b := &Bar{cfg: cfg, cfgPath: cfgPath, log: log, display: display, modCh: make(chan struct{}, 1), cfgCh: make(chan config.Config, 1),
-		themeCh: make(chan struct{}, 1)}
+		themeCh: make(chan struct{}, 1), scriptCh: make(chan string, 16)}
 	var err error
 	if err = b.loadTheme(); err != nil {
 		return nil, err
@@ -199,6 +204,58 @@ func (b *Bar) watchTheme() {
 	}
 }
 
+// watchScripts watches the directory of every module's script, so editing a
+// script, or a helper it sources from the same directory, restarts the modules
+// that live there. It runs again whenever the set of modules changes.
+func (b *Bar) watchScripts() {
+	if b.scriptCancel != nil {
+		b.scriptCancel()
+	}
+	if b.runCtx == nil {
+		return // Run has not started; it calls syncModules, which calls this
+	}
+	ctx, cancel := context.WithCancel(b.runCtx)
+	b.scriptCancel = cancel
+	seen := map[string]bool{}
+	for _, r := range b.runners {
+		dir := module.ScriptDir(r.cfg.Exec)
+		if dir == "" || seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		go func() {
+			changed := make(chan struct{}, 1)
+			go func() {
+				if err := fswatch.WatchDir(ctx, dir, 150*time.Millisecond, changed); err != nil {
+					b.log.Warn("cannot watch a script directory; edits to its scripts need a restart", "dir", dir, "err", err)
+				}
+			}()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-changed:
+					select {
+					case b.scriptCh <- dir:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+		}()
+	}
+}
+
+// restartScripts restarts the modules whose script is in dir.
+func (b *Bar) restartScripts(dir string) {
+	b.log.Info("script changed; restarting its modules", "dir", dir)
+	if b.stale == nil {
+		b.stale = map[string]bool{}
+	}
+	b.stale[dir] = true
+	b.syncModules(b.cfg.Module)
+}
+
 // reloadTheme re-reads the theme after one of its files changed.
 func (b *Bar) reloadTheme() {
 	base := filepath.Dir(b.cfgPath)
@@ -245,7 +302,7 @@ func (b *Bar) syncModules(want []config.Module) {
 	for _, w := range want {
 		if r, ok := old[w.Name]; ok {
 			delete(old, w.Name)
-			if r.cfg == w && slices.Equal(r.env, b.env) {
+			if r.cfg == w && slices.Equal(r.env, b.env) && !b.stale[module.ScriptDir(w.Exec)] {
 				next = append(next, r)
 				continue
 			}
@@ -261,6 +318,8 @@ func (b *Bar) syncModules(want []config.Module) {
 		r.cancel()
 	}
 	b.runners = next
+	clear(b.stale)
+	b.watchScripts()
 	b.mods = b.mods[:0]
 	for _, r := range next {
 		b.mods = append(b.mods, r.m)
@@ -293,6 +352,21 @@ func (b *Bar) applyConfig(next config.Config) {
 	}
 	b.syncModules(next.Module)
 	b.dirty = true
+	if next.Bar.Position != old.Bar.Position && b.surf != nil {
+		// The edge is part of how a layer surface is created: make a new one.
+		b.log.Info("moving the bar", "to", next.Bar.Position)
+		b.dropRenderer()
+		_, h, _ := b.surf.Size()
+		if err = b.surf.Close(); err != nil {
+			b.fail(err)
+			return
+		}
+		if err = b.createSurface(h); err != nil {
+			b.fail(err)
+			return
+		}
+		b.Stats.Recreated++
+	}
 	if fontChanged || next.Bar.Size != old.Bar.Size || next.Bar.Scale != old.Bar.Scale {
 		b.facePx = -1 // reconcile rebuilds the font, and the surface if its height changed
 		b.reconcile()
@@ -341,6 +415,8 @@ func (b *Bar) Run(ctx context.Context) (err error) {
 			b.applyConfig(next)
 		case <-b.themeCh:
 			b.reloadTheme()
+		case dir := <-b.scriptCh:
+			b.restartScripts(dir)
 		case <-b.settleC:
 			b.settleC, b.settling = nil, false
 			b.reconcile()
@@ -399,12 +475,20 @@ func connectError(display string, err error) error {
 // estimateHeight is the first request, before the real cell height is known.
 func estimateHeight(px float64) int32 { return int32(math.Ceil(px * 1.5)) }
 
+// edge is the layer-shell anchor for a bar.position value.
+func edge(position string) neferclient.Anchor {
+	if position == "bottom" {
+		return neferclient.AnchorBottom
+	}
+	return neferclient.AnchorTop
+}
+
 func (b *Bar) createSurface(h int32) error {
 	surf, err := b.conn.NewLayerSurface(neferclient.LayerConfig{
 		Output:        b.cfg.Bar.Output,
 		Namespace:     "neferbar",
 		Level:         neferclient.LayerTop,
-		Anchors:       neferclient.AnchorTop | neferclient.AnchorLeft | neferclient.AnchorRight,
+		Anchors:       edge(b.cfg.Bar.Position) | neferclient.AnchorLeft | neferclient.AnchorRight,
 		ExclusiveZone: h,
 		Height:        h,
 		InputRects:    []neferclient.Rect{}, // read only: click-through
