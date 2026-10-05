@@ -86,9 +86,13 @@ type Bar struct {
 	// buffer of the wrong size, and some compositors keep that size.
 	settling bool
 	settleC  <-chan time.Time
-	Stats    Stats
-	fatal    error
-	closed   bool
+
+	// mappedW is the logical width the current layer surface was first drawn at.
+	// It resets to 0 when the surface is recreated.
+	mappedW int32
+	Stats   Stats
+	fatal   error
+	closed  bool
 }
 
 // New builds a bar from a validated config.
@@ -312,6 +316,7 @@ func (b *Bar) createSurface(h int32) error {
 		return fmt.Errorf("layer surface: %w", err)
 	}
 	b.surf, b.sid = surf, surf.ID()
+	b.mappedW = 0
 	b.configured, b.canPresent = false, false
 	return nil
 }
@@ -405,7 +410,7 @@ func (b *Bar) reconcile() {
 		}
 		b.dev, b.node = dev, node
 	}
-	_, h, scale := b.surf.Size()
+	w, h, scale := b.surf.Size()
 	px := b.cfg.Bar.Size * b.cfg.Bar.Scale * scale
 	if b.face == nil || b.facePx != px {
 		face, err := glyph.Load(b.fonts, px)
@@ -441,6 +446,25 @@ func (b *Bar) reconcile() {
 	if b.rend != nil && b.rend.W == pw && b.rend.H == ph {
 		return
 	}
+	if b.mappedW != 0 && w != b.mappedW {
+		// The logical width changed (a scale change on the output). NeferWL
+		// places a layer surface from the size it had when it was mapped and
+		// does not re-read it when only the buffer and viewport change, so the
+		// old width would stay: centered in a narrower output, the left part cut
+		// off. A new surface is mapped fresh and placed from its real size.
+		b.log.Info("recreating layer surface: the output width changed", "from", b.mappedW, "to", w)
+		b.dropRenderer()
+		if err := b.surf.Close(); err != nil {
+			b.fail(err)
+			return
+		}
+		if err := b.createSurface(h); err != nil {
+			b.fail(err)
+			return
+		}
+		b.Stats.Recreated++
+		return
+	}
 	b.dropRenderer()
 	if mod, err := b.chooseModifier(); err != nil {
 		b.fail(err)
@@ -453,7 +477,7 @@ func (b *Bar) reconcile() {
 		b.fail(err)
 		return
 	}
-	b.rend = rend
+	b.rend, b.mappedW = rend, w
 	b.Stats.Rebuilds++
 	if b.lay == nil {
 		b.lay = layout.New(rend.Cols(), b.fg, b.bg, b.mods)
