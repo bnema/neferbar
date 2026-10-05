@@ -15,6 +15,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/bnema/neferclient"
@@ -56,9 +57,9 @@ type Bar struct {
 	dirty      bool
 
 	// font
-	regularPath, boldPath string
-	face                  *glyph.Face
-	facePx                float64
+	fonts  glyph.Paths
+	face   *glyph.Face
+	facePx float64
 
 	dev  *gpu.Device
 	node *syncobj.Node
@@ -93,11 +94,8 @@ func New(cfg config.Config, log *slog.Logger, display string) (*Bar, error) {
 	if b.bg, err = config.ParseColor(cfg.Bar.Background); err != nil {
 		return nil, err
 	}
-	if b.regularPath, err = glyph.FindFont(cfg.Bar.Font, false); err != nil {
+	if b.fonts, err = findFonts(cfg.Bar.Font, log); err != nil {
 		return nil, err
-	}
-	if b.boldPath, err = glyph.FindFont(cfg.Bar.Font, true); err != nil {
-		b.boldPath = b.regularPath
 	}
 	for i := range b.watched {
 		b.watched[i] = -1
@@ -168,14 +166,11 @@ func (b *Bar) applyConfig(next config.Config) {
 		return
 	}
 	fontChanged := next.Bar.Font != old.Bar.Font
-	reg, bold := b.regularPath, b.boldPath
+	fonts := b.fonts
 	if fontChanged {
-		if reg, err = glyph.FindFont(next.Bar.Font, false); err != nil {
+		if fonts, err = findFonts(next.Bar.Font, b.log); err != nil {
 			b.log.Warn("config not applied", "err", err)
 			return
-		}
-		if bold, err = glyph.FindFont(next.Bar.Font, true); err != nil {
-			bold = reg
 		}
 	}
 	if next.Bar.Output != old.Bar.Output {
@@ -183,7 +178,7 @@ func (b *Bar) applyConfig(next config.Config) {
 		next.Bar.Output = old.Bar.Output
 	}
 	b.cfg = next
-	b.regularPath, b.boldPath = reg, bold
+	b.fonts = fonts
 	b.syncModules(next.Module)
 	if fg != b.fg || bg != b.bg {
 		b.fg, b.bg = fg, bg
@@ -246,6 +241,19 @@ func (b *Bar) Run(ctx context.Context) (err error) {
 		}
 	}
 	return nil
+}
+
+// findFonts resolves the four font files of a family and warns when
+// fontconfig had to substitute another family.
+func findFonts(family string, log *slog.Logger) (glyph.Paths, error) {
+	p, err := glyph.FindFonts(family)
+	if err != nil {
+		return p, err
+	}
+	if got := glyph.FamilyOf(family); got != "" && !strings.EqualFold(got, family) && !strings.HasPrefix(strings.ToLower(family), strings.ToLower(got)) {
+		log.Warn("font not found, fontconfig substituted another family: icons may be missing", "wanted", family, "got", got, "file", p[0])
+	}
+	return p, nil
 }
 
 // socketPath mirrors how neferclient resolves the socket, for error messages.
@@ -389,7 +397,7 @@ func (b *Bar) reconcile() {
 	_, h, scale := b.surf.Size()
 	px := b.cfg.Bar.Size * b.cfg.Bar.Scale * scale
 	if b.face == nil || b.facePx != px {
-		face, err := glyph.Load(b.regularPath, b.boldPath, px)
+		face, err := glyph.Load(b.fonts, px)
 		if err != nil {
 			b.fail(err)
 			return

@@ -4,6 +4,7 @@ package layout
 import (
 	vt "github.com/bnema/vev-vt"
 
+	"git.bnema.dev/bnema/neferbar/internal/glyph"
 	"git.bnema.dev/bnema/neferbar/internal/gpu"
 	"git.bnema.dev/bnema/neferbar/internal/module"
 )
@@ -174,7 +175,20 @@ func convert(c vt.Cell, defFG, defBG [3]uint8) gpu.Cell {
 	if r == 0 || c.Continuation {
 		r = ' '
 	}
-	return gpu.Cell{Rune: r, FG: fg, BG: bg, Bold: st.Bold}
+	var style glyph.Style
+	if st.Bold {
+		style |= glyph.Bold
+	}
+	if st.Italic {
+		style |= glyph.Italic
+	}
+	if st.Attrs&vt.AttrUnderline != 0 || st.UnderlineStyle != vt.UnderlineNone {
+		style |= glyph.Underline
+	}
+	if st.Attrs&vt.AttrStrikethrough != 0 {
+		style |= glyph.Strike
+	}
+	return gpu.Cell{Rune: r, FG: fg, BG: bg, Style: style}
 }
 
 // Compose lays the zones out in one row: left from the left edge, right to

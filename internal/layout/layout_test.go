@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"testing"
 
+	"git.bnema.dev/bnema/neferbar/internal/glyph"
 	"git.bnema.dev/bnema/neferbar/internal/module"
 	"git.bnema.dev/bnema/neferbar/internal/racecheck"
 )
@@ -84,7 +85,7 @@ func TestColorsAndClip(t *testing.T) {
 	if row[1].FG != l.fg {
 		t.Fatalf("reset should restore default fg: %+v", row[1])
 	}
-	if !row[2].Bold || row[2].FG != [3]uint8{1, 2, 3} {
+	if row[2].Style&glyph.Bold == 0 || row[2].FG != [3]uint8{1, 2, 3} {
 		t.Fatalf("bold truecolor cell: %+v", row[2])
 	}
 }
@@ -123,5 +124,18 @@ func TestUpdateComposeAllocs(t *testing.T) {
 	}
 	if got := testing.AllocsPerRun(500, step); got > 0 {
 		t.Errorf("Update+Compose allocates %.1f objects per frame; want 0", got)
+	}
+}
+
+func TestTextStyles(t *testing.T) {
+	l, m := newTestLayout(10)
+	publish(m[0], "\x1b[3mi\x1b[0m\x1b[4mu\x1b[0m\x1b[9ms\x1b[0m\x1b[1;3;4;9mA\x1b[0mn")
+	l.Update()
+	row := l.Compose()
+	want := []glyph.Style{glyph.Italic, glyph.Underline, glyph.Strike, glyph.Bold | glyph.Italic | glyph.Underline | glyph.Strike, 0}
+	for i, w := range want {
+		if row[i].Style != w {
+			t.Errorf("cell %d (%q): style %04b, want %04b", i, row[i].Rune, row[i].Style, w)
+		}
 	}
 }

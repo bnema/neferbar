@@ -1,77 +1,185 @@
 # neferbar
 
-A one-cell-high, terminal-style status bar for Wayland (wlr-layer-shell). Modules are scripts that print ANSI text; the bar draws it with a monospace Nerd Font through raw Vulkan. It is read-only, follows the monitor's fractional scale, and renders only when a module changes, so an animated module can reach the compositor's frame rate and an idle bar costs nothing.
+A dead simple status bar for Wayland: **one line of terminal text, nothing else.**
 
-## Requirements
+Each part of the bar is a script. A script prints text, and neferbar shows it. If you can write `echo`, you can write a module.
 
-- A compositor with `zwlr_layer_shell_v1`, `zwp_linux_dmabuf_v1` v4 and `wp_linux_drm_syncobj_v1` (and, for fractional scale, `wp_fractional_scale_v1` with `wp_viewporter`). GNOME is not supported.
-- Linux 6.6 or newer, a Vulkan 1.3 driver with DMA-BUF export, and a Nerd Font installed (`fc-match` must find it).
-- Go 1.27.
+```
+ workspace 2   firefox                     14:32:07                     cpu 12%  vol 40%  bat 88%
+```
 
-## Build and run
+- **Text only.** ASCII, Unicode and Nerd Font icons. No images, no widgets, no clicks.
+- **Exactly one character high.** The bar is as tall as a terminal row, and it follows your monitor's scale.
+- **Scripts do the work.** Any language, anything that prints to stdout.
+- **Fast when you ask.** Print 60 times a second and the bar redraws 60 times a second. Print nothing and it uses no CPU or GPU.
+
+It needs a compositor with `wlr-layer-shell`, such as Sway, Hyprland, Niri, River or NeferWL. GNOME is not supported.
+
+## Install
+
+You need Go 1.27, a Vulkan 1.3 GPU driver, and a [Nerd Font](https://www.nerdfonts.com/).
 
 ```sh
 go build -o neferbar ./cmd/neferbar
-./neferbar -config examples/config.toml
+./neferbar
 ```
 
-Flags: `-config <file>`, `-display <socket>`, `-pprof <loopback addr>`, `-memstats <interval>`.
+Start it from your compositor's autostart. For NeferWL:
 
-The Wayland socket comes from `-display`, then `$NEFERBAR_DISPLAY`, then `$WAYLAND_DISPLAY`, then `wayland-0`. A relative name lives in `$XDG_RUNTIME_DIR`; an absolute path is used as is.
+```
+startup = /full/path/to/neferbar
+```
 
-## Configuration
+## Configure
 
-`$XDG_CONFIG_HOME/neferbar/config.toml`:
+Create `~/.config/neferbar/config.toml`:
 
 ```toml
 [bar]
-font = "JetBrainsMono Nerd Font Mono"
-size = 14            # logical pixels
-scale = 1.0          # multiplier on top of the monitor scale
-output = ""          # wl_output name; empty lets the compositor choose
+font = "JetBrainsMono Nerd Font Mono"   # use a "Mono" Nerd Font so icons fit one cell
+size = 14                                # text size
 background = "#1e1e2e"
 foreground = "#cdd6f4"
 
 [[module]]
-name = "clock"
-zone = "center"      # left | center | right
-exec = "clock.sh"
+name = "clock"          # a unique name
+zone = "center"         # left, center or right
+exec = "~/.config/neferbar/clock.sh"
 ```
 
-## Live reload
+Add one `[[module]]` block per script. Save the file and the bar updates immediately. If you make a typo, the bar keeps the old config and prints the error.
 
-The config file is watched, including editors that save through a temp file and symlinked dotfiles. A valid change applies at once; a broken, invalid or deleted file is logged and the running config stays.
+| Setting | Default | Meaning |
+|---|---|---|
+| `bar.font` | `JetBrainsMono Nerd Font Mono` | A font family known to fontconfig (`fc-list`). |
+| `bar.size` | `14` | Text size in logical pixels. |
+| `bar.scale` | `1.0` | Extra zoom on top of the monitor scale. |
+| `bar.output` | any | A monitor name such as `HDMI-A-1`. Needs a restart. |
+| `bar.background`, `bar.foreground` | catppuccin | `#rrggbb`. |
 
-- Colors, font, size and scale apply live; the bar rebuilds its font and recreates the surface if its height changes.
-- Modules are matched by `name`: an unchanged one keeps running, a removed one is stopped, a new or changed one is started.
-- `bar.output` needs a restart, and the bar says so.
-- A module script that you edit on disk is picked up when the script restarts, not before.
+If the font is not installed, neferbar warns and falls back to another font, and icons may be missing.
 
-## Modules
+## Write a script
 
-A module is a long-running `/bin/sh -c` command. Its stdout is ANSI text (SGR colors, bold, inverse, dim). A frame ends at a newline or a form feed, and each frame replaces the previous one. Only the latest frame matters: a script that prints faster than the bar draws overwrites its pending frame.
+A module is any program that prints lines. **Each line replaces what the module showed before.**
 
-- Animate by printing frames quickly, ending each with `\f`. See `examples/modules/rainbow.sh`.
-- A module that exits is restarted with backoff and shows `[name!]` while it is down. Its stderr goes to the bar's log.
-- Left and right zones keep their text; the center is cut first when they would overlap.
+The smallest module:
 
-## Height and scale
+```sh
+#!/bin/sh
+echo "hello"
+sleep 100000
+```
 
-The bar is exactly one cell high: `cell = ceil(size × scale × monitor scale)` physical pixels, and the layer surface height is `ceil(cell / monitor scale)` logical pixels. When the monitor scale changes the font is rebuilt, and the surface is recreated if its height changes.
+A clock, updated every second:
 
-## Profiling
+```sh
+#!/bin/sh
+while true; do
+    date +%H:%M:%S
+    sleep 1
+done
+```
 
-`-pprof localhost:6060` serves the pprof handlers on a loopback address and records every allocation. `-memstats 5s` logs allocation counters. The tests assert zero allocations per frame for the draw path, the layout and the module hand-off.
+Make it executable (`chmod +x clock.sh`) and put its path in `exec`. That's all.
 
-## Testing
+Rules:
+
+1. Print one line, then print another line later. The new line replaces the old one.
+2. A frame ends at a newline (`\n`) or a form feed (`\f`). Use `\f` if the frame itself should not end the line.
+3. Keep the script running. A script that exits is restarted after a short delay, and the bar shows `[name!]` in the meantime.
+4. Print errors to stderr. They go to the bar's log and not to the screen.
+5. Frames are cut to 16 KiB, and text wider than the bar is clipped.
+
+### Colors and styles
+
+Use ordinary terminal escape codes. If it works in a terminal, it works here.
+
+```sh
+printf '\033[32mOK\033[0m  \033[1;31mFAIL\033[0m\n'
+```
+
+| Code | Effect |
+|---|---|
+| `\033[1m` | **bold** |
+| `\033[2m` | dim |
+| `\033[3m` | *italic* |
+| `\033[4m` | underline |
+| `\033[7m` | inverse |
+| `\033[9m` | ~~strikethrough~~ |
+| `\033[30m`..`\033[37m` | foreground colors |
+| `\033[40m`..`\033[47m` | background colors |
+| `\033[38;5;Nm` / `\033[48;5;Nm` | 256-color palette |
+| `\033[38;2;R;G;Bm` / `\033[48;2;R;G;Bm` | true color |
+| `\033[0m` | reset |
+
+Italic, bold and bold italic use the font's own files when it has them.
+
+### Icons
+
+Nerd Font icons are ordinary characters. Print them from a script with their UTF-8 bytes:
+
+```sh
+printf '\357\200\227 %s\n' "$(date +%H:%M)"     # clock icon
+```
+
+Find icon codes at <https://www.nerdfonts.com/cheat-sheet>.
+
+### Animation
+
+Print faster. Each frame ends with `\f`:
+
+```sh
+#!/bin/sh
+# a spinner at 20 fps
+while true; do
+    for c in '|' '/' '-' '\'; do
+        printf '%s\f' "$c"
+        sleep 0.05
+    done
+done
+```
+
+neferbar draws at most as often as your monitor refreshes. If a script prints faster than that, only the latest frame is drawn. A script that prints nothing costs nothing.
+
+### Example modules
+
+The `examples/modules` directory has three:
+
+- `static.sh`: one line, then idle.
+- `clock.sh`: a clock with an icon.
+- `rainbow.sh [fps] [width]`: a 60 fps scrolling rainbow.
+
+## Layout
+
+The bar has three zones. Modules in the same zone appear side by side, in the order of the config file.
+
+- **left** starts at the left edge.
+- **right** ends at the right edge.
+- **center** sits in the middle of the space that is left. If the bar is too narrow, the center is cut first.
+
+## Command line
+
+```
+neferbar [-config file] [-display socket] [-pprof addr] [-memstats interval]
+```
+
+| Flag | Meaning |
+|---|---|
+| `-config` | Config file. Default: `$XDG_CONFIG_HOME/neferbar/config.toml`. |
+| `-display` | Wayland socket name or path. Default: `$NEFERBAR_DISPLAY`, then `$WAYLAND_DISPLAY`. |
+| `-pprof` | Serve Go profiling on a loopback address, such as `localhost:6060`. |
+| `-memstats` | Log allocation counters at this interval. |
+
+## Test without touching your desktop
 
 ```sh
 go test ./...
-scripts/headless.sh examples/config.toml 5   # nested headless NeferWL, screenshots in /tmp/neferbar-shots
+scripts/headless.sh examples/config.toml 5        # runs in a nested headless NeferWL
 SCALE=1.5 SIZE=1200x200 scripts/headless.sh examples/config.toml 5
 ```
 
-The GPU tests skip when no render node or Vulkan device is available.
+Screenshots land in `/tmp/neferbar-shots`.
 
 ## License
 

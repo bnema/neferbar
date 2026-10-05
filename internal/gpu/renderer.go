@@ -28,7 +28,7 @@ const (
 type Cell struct {
 	Rune   rune
 	FG, BG [3]uint8
-	Bold   bool
+	Style  glyph.Style
 }
 
 // instance is the per-cell vertex data (64 bytes, four vec4).
@@ -40,8 +40,8 @@ type instance struct {
 }
 
 type glyphKey struct {
-	r    rune
-	bold bool
+	r     rune
+	style glyph.Style
 }
 
 type slotState uint8
@@ -172,10 +172,10 @@ func NewRenderer(dev *Device, node *syncobj.Node, mod Modifier, face *glyph.Face
 	}
 	// Glyph 0 is the blank cell. Printable ASCII is assigned now and uploaded
 	// with the first frame.
-	r.glyphs[glyphKey{' ', false}] = 0
+	r.glyphs[glyphKey{' ', 0}] = 0
 	r.nextGlyph = 1
 	for c := rune(0x21); c < 0x7f; c++ {
-		r.glyphs[glyphKey{c, false}] = r.nextGlyph
+		r.glyphs[glyphKey{c, 0}] = r.nextGlyph
 		r.nextGlyph++
 	}
 	r.uploadKeys = make([]glyphKey, 0, maxUploads)
@@ -437,16 +437,16 @@ func (r *Renderer) Draw(cells []Cell, clear [3]uint8, out *Frame) (bool, error) 
 	}
 	r.uploadKeys, r.uploadIdx = r.uploadKeys[:0], r.uploadIdx[:0]
 	if !r.atlasInited {
-		r.queueGlyph(glyphKey{' ', false}, 0)
+		r.queueGlyph(glyphKey{' ', 0}, 0)
 		for c := rune(0x21); c < 0x7f; c++ {
-			r.queueGlyph(glyphKey{c, false}, r.glyphs[glyphKey{c, false}])
+			r.queueGlyph(glyphKey{c, 0}, r.glyphs[glyphKey{c, 0}])
 		}
 	}
 	cw, ch := float32(r.face.CellW), float32(r.face.CellH)
 	inv := float32(1) / atlasSize
 	for i := range cells {
 		c := &cells[i]
-		gi := r.glyph(glyphKey{c.Rune, c.Bold})
+		gi := r.glyph(glyphKey{c.Rune, c.Style})
 		gx, gy := float32(int(gi)%r.atlasCols)*cw, float32(int(gi)/r.atlasCols)*ch
 		in := &s.inst[i]
 		in.Rect = [4]float32{float32(i) * cw, r.yOff, cw, ch}
@@ -458,7 +458,7 @@ func (r *Renderer) Draw(cells []Cell, clear [3]uint8, out *Frame) (bool, error) 
 	s.regions = s.regions[:0]
 	for i, k := range r.uploadKeys {
 		off := i * cellBytes
-		r.face.Rasterize(k.r, k.bold, s.stage[off:off+cellBytes])
+		r.face.Rasterize(k.r, k.style, s.stage[off:off+cellBytes])
 		gi := int(r.uploadIdx[i])
 		s.regions = append(s.regions, vulkan.BufferImageCopy{
 			BufferOffset:     vulkan.DeviceSize(off),

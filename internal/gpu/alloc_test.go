@@ -36,14 +36,14 @@ func newTestRenderer(t *testing.T) (*Renderer, *Device, *syncobj.Node) {
 		mod = Modifier(m)
 		break
 	}
-	path, err := glyph.FindFont("monospace", false)
+	paths, err := glyph.FindFonts("monospace")
 	if err != nil {
 		t.Skip(err)
 	}
-	if _, err := os.Stat(path); err != nil {
+	if _, err := os.Stat(paths[0]); err != nil {
 		t.Skip(err)
 	}
-	face, err := glyph.Load(path, "", 16)
+	face, err := glyph.Load(paths, 16)
 	if err != nil {
 		t.Skip(err)
 	}

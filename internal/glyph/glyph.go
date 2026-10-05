@@ -15,30 +15,63 @@ import (
 	"golang.org/x/image/math/fixed"
 )
 
-// Face rasterizes runes of one font at one pixel size. All glyphs are clipped
-// to a CellW x CellH box. It is used from one goroutine.
+// Style is a set of text attributes. Bold and Italic pick a font file;
+// Underline and Strike are drawn into the glyph bitmap.
+type Style uint8
+
+const (
+	Bold Style = 1 << iota
+	Italic
+	Underline
+	Strike
+)
+
+// fontBits is the part of a Style that selects one of the four font files.
+const fontBits = Bold | Italic
+
+// Paths holds the font file of each weight and slant, indexed by Bold|Italic.
+// An empty entry falls back to the nearest available face.
+type Paths [4]string
+
+// Face rasterizes runes of one font family at one pixel size. All glyphs are
+// clipped to a CellW x CellH box. It is used from one goroutine.
 type Face struct {
-	regular, bold font.Face
+	faces [4]font.Face
 	// CellW and CellH are the cell size in physical pixels.
 	CellW, CellH int
 	ascent       fixed.Int26_6
+	ascentPx     int
+	thick        int // line thickness for underline and strike, in pixels
 }
 
-// FindFont asks fontconfig for the file of a family and weight.
-func FindFont(family string, bold bool) (string, error) {
-	pattern := family
-	if bold {
-		pattern += ":bold"
+// fcPatterns are the fontconfig suffixes for Paths' four entries.
+var fcPatterns = [4]string{"", ":bold", ":italic", ":bold:italic"}
+
+// FindFonts asks fontconfig for the four files of a family. Styles the family
+// lacks resolve to whatever fontconfig picks, usually the regular file.
+func FindFonts(family string) (Paths, error) {
+	var p Paths
+	for i, suffix := range fcPatterns {
+		out, err := exec.Command("fc-match", "-f", "%{file}", family+suffix).Output()
+		if err != nil {
+			return p, fmt.Errorf("fontconfig lookup of %q failed: %w", family+suffix, err)
+		}
+		p[i] = strings.TrimSpace(string(out))
+		if p[i] == "" {
+			return p, fmt.Errorf("fontconfig found no file for %q", family+suffix)
+		}
 	}
-	out, err := exec.Command("fc-match", "-f", "%{file}", pattern).Output()
+	return p, nil
+}
+
+// FamilyOf reports the family fontconfig resolved a request to, so callers can
+// warn when it is not the family that was asked for.
+func FamilyOf(request string) string {
+	out, err := exec.Command("fc-match", "-f", "%{family[0]}", request).Output()
 	if err != nil {
-		return "", fmt.Errorf("glyph: fc-match %q: %w", pattern, err)
+		return ""
 	}
-	path := strings.TrimSpace(string(out))
-	if path == "" {
-		return "", fmt.Errorf("glyph: no font file for %q", pattern)
-	}
-	return path, nil
+	return strings.TrimSpace(string(out))
 }
 
 func loadFace(path string, px float64) (font.Face, error) {
@@ -53,26 +86,48 @@ func loadFace(path string, px float64) (font.Face, error) {
 	return opentype.NewFace(f, &opentype.FaceOptions{Size: px, DPI: 72, Hinting: font.HintingFull})
 }
 
-// Load opens a regular and an optional bold font file at px pixels. The cell
-// size comes from the regular face: the advance of "M" and ascent plus descent.
-func Load(regularPath, boldPath string, px float64) (*Face, error) {
+// Load opens the font files at px pixels. The cell size comes from the regular
+// face: the advance of "M", and ascent plus descent.
+func Load(paths Paths, px float64) (*Face, error) {
 	if px < 4 || px > 512 {
 		return nil, fmt.Errorf("glyph: unsupported font size %.1f px", px)
 	}
-	f := &Face{}
-	var err error
-	if f.regular, err = loadFace(regularPath, px); err != nil {
-		return nil, err
+	if paths[0] == "" {
+		return nil, fmt.Errorf("glyph: no regular font file")
 	}
-	f.bold = f.regular
-	if boldPath != "" && boldPath != regularPath {
-		if f.bold, err = loadFace(boldPath, px); err != nil {
-			f.regular.Close()
+	f := &Face{}
+	byPath := map[string]font.Face{}
+	for i, path := range paths {
+		if path == "" {
+			continue // filled from a neighbour below
+		}
+		if face, ok := byPath[path]; ok {
+			f.faces[i] = face
+			continue
+		}
+		face, err := loadFace(path, px)
+		if err != nil {
+			f.Close()
 			return nil, err
 		}
+		byPath[path], f.faces[i] = face, face
 	}
-	m := f.regular.Metrics()
-	adv, ok := f.regular.GlyphAdvance('M')
+	// A missing bold-italic uses bold, then italic; any other gap uses regular.
+	for i := range f.faces {
+		if f.faces[i] != nil {
+			continue
+		}
+		switch {
+		case Style(i) == Bold|Italic && f.faces[Bold] != nil:
+			f.faces[i] = f.faces[Bold]
+		case Style(i) == Bold|Italic && f.faces[Italic] != nil:
+			f.faces[i] = f.faces[Italic]
+		default:
+			f.faces[i] = f.faces[0]
+		}
+	}
+	m := f.faces[0].Metrics()
+	adv, ok := f.faces[0].GlyphAdvance('M')
 	if !ok || adv <= 0 {
 		f.Close()
 		return nil, fmt.Errorf("glyph: font has no usable advance for 'M'")
@@ -80,6 +135,8 @@ func Load(regularPath, boldPath string, px float64) (*Face, error) {
 	f.CellW = int(math.Round(float64(adv) / 64))
 	f.CellH = int(math.Ceil(float64(m.Ascent+m.Descent) / 64))
 	f.ascent = m.Ascent
+	f.ascentPx = int(math.Round(float64(m.Ascent) / 64))
+	f.thick = max(1, int(math.Round(px/14)))
 	if f.CellW < 1 || f.CellH < 1 {
 		f.Close()
 		return nil, fmt.Errorf("glyph: degenerate cell %dx%d", f.CellW, f.CellH)
@@ -92,44 +149,61 @@ func (f *Face) Close() {
 	if f == nil {
 		return
 	}
-	if f.bold != nil && f.bold != f.regular {
-		f.bold.Close()
+	closed := map[font.Face]bool{}
+	for i, face := range f.faces {
+		if face != nil && !closed[face] {
+			closed[face] = true
+			face.Close()
+		}
+		f.faces[i] = nil
 	}
-	if f.regular != nil {
-		f.regular.Close()
-	}
-	f.regular, f.bold = nil, nil
 }
 
 // Rasterize draws r into dst, which must hold CellW*CellH bytes (stride
 // CellW). Pixels outside the cell are clipped; a missing glyph leaves dst
-// empty.
-func (f *Face) Rasterize(r rune, bold bool, dst []byte) {
+// empty. Underline and Strike add a full-width line in the foreground.
+func (f *Face) Rasterize(r rune, style Style, dst []byte) {
 	clear(dst[:f.CellW*f.CellH])
-	face := f.regular
-	if bold {
-		face = f.bold
+	face := f.faces[style&fontBits]
+	if dr, mask, maskp, _, ok := face.Glyph(fixed.Point26_6{X: 0, Y: f.ascent}, r); ok {
+		alpha, isAlpha := mask.(*image.Alpha)
+		for y := dr.Min.Y; y < dr.Max.Y; y++ {
+			if y < 0 || y >= f.CellH {
+				continue
+			}
+			for x := dr.Min.X; x < dr.Max.X; x++ {
+				if x < 0 || x >= f.CellW {
+					continue
+				}
+				mx, my := maskp.X+x-dr.Min.X, maskp.Y+y-dr.Min.Y
+				if isAlpha {
+					dst[y*f.CellW+x] = alpha.Pix[alpha.PixOffset(mx, my)]
+					continue
+				}
+				_, _, _, a := mask.At(mx, my).RGBA()
+				dst[y*f.CellW+x] = uint8(a >> 8)
+			}
+		}
 	}
-	dr, mask, maskp, _, ok := face.Glyph(fixed.Point26_6{X: 0, Y: f.ascent}, r)
-	if !ok {
-		return
+	if style&Underline != 0 {
+		// Below the baseline, a third of the way into the descent.
+		descent := f.CellH - f.ascentPx
+		f.line(dst, f.ascentPx+max(1, descent/3))
 	}
-	alpha, isAlpha := mask.(*image.Alpha)
-	for y := dr.Min.Y; y < dr.Max.Y; y++ {
-		if y < 0 || y >= f.CellH {
+	if style&Strike != 0 {
+		// Through the middle of the lowercase letters.
+		f.line(dst, f.ascentPx-max(1, f.ascentPx*3/10)-f.thick/2)
+	}
+}
+
+// line fills f.thick rows starting at y, clipped to the cell.
+func (f *Face) line(dst []byte, y int) {
+	for row := y; row < y+f.thick; row++ {
+		if row < 0 || row >= f.CellH {
 			continue
 		}
-		for x := dr.Min.X; x < dr.Max.X; x++ {
-			if x < 0 || x >= f.CellW {
-				continue
-			}
-			mx, my := maskp.X+x-dr.Min.X, maskp.Y+y-dr.Min.Y
-			if isAlpha {
-				dst[y*f.CellW+x] = alpha.Pix[alpha.PixOffset(mx, my)]
-				continue
-			}
-			_, _, _, a := mask.At(mx, my).RGBA()
-			dst[y*f.CellW+x] = uint8(a >> 8)
+		for x := 0; x < f.CellW; x++ {
+			dst[row*f.CellW+x] = 255
 		}
 	}
 }
