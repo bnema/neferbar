@@ -4,7 +4,7 @@ A dead simple status bar for Wayland: **one line of terminal text, nothing else.
 
 Each part of the bar is a script. A script prints text, and neferbar shows it. If you can write `echo`, you can write a module.
 
-![The bundled bar: workspaces on the left, the focused app and its title in the middle, the clock on the right](docs/img/bundle.png)
+![The bundled bar on a NeferWL desktop with a terminal and an empty Firefox: workspaces on the left, the focused app and its title in the middle, the clock on the right](docs/img/bundle.png)
 
 - **Text only.** ASCII, Unicode and Nerd Font icons. No images, no widgets, no clicks.
 - **Exactly one character high.** The bar is as tall as a terminal row, and it follows your monitor's scale.
