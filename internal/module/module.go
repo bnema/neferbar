@@ -42,6 +42,8 @@ type Module struct {
 	Name string
 	Zone Zone
 	Exec string
+	// Env is added to the script's environment, as KEY=value entries.
+	Env []string
 
 	mu      sync.Mutex
 	pending []byte // latest complete frame
@@ -126,7 +128,7 @@ func (m *Module) runOnce(ctx context.Context) error {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGTERM}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
 	cmd.WaitDelay = 2 * time.Second
-	cmd.Env = append(os.Environ(), "NEFERBAR_MODULE="+m.Name)
+	cmd.Env = append(append(os.Environ(), m.Env...), "NEFERBAR_MODULE="+m.Name)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return err

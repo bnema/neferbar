@@ -15,6 +15,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -22,11 +23,13 @@ import (
 	"github.com/bnema/neferclient"
 
 	"git.bnema.dev/bnema/neferbar/internal/config"
+	"git.bnema.dev/bnema/neferbar/internal/fswatch"
 	"git.bnema.dev/bnema/neferbar/internal/glyph"
 	"git.bnema.dev/bnema/neferbar/internal/gpu"
 	"git.bnema.dev/bnema/neferbar/internal/layout"
 	"git.bnema.dev/bnema/neferbar/internal/module"
 	"git.bnema.dev/bnema/neferbar/internal/syncobj"
+	"git.bnema.dev/bnema/neferbar/internal/theme"
 )
 
 const acquireTimelineID = 1 << 32
@@ -80,6 +83,12 @@ type Bar struct {
 	cfgPath string
 	cfgCh   chan config.Config
 
+	theme       theme.Theme
+	themeCh     chan struct{}
+	themeCancel context.CancelFunc
+	pal         [16][3]uint8
+	env         []string // theme colors for the scripts
+
 	// settling is true between a scale or size change and the moment both the
 	// new scale and the new logical width have arrived. They come as separate
 	// events, in either order; building a renderer from half of them presents a
@@ -98,12 +107,10 @@ type Bar struct {
 // New builds a bar from a validated config.
 // display names the Wayland socket; empty uses $WAYLAND_DISPLAY.
 func New(cfg config.Config, log *slog.Logger, display string) (*Bar, error) {
-	b := &Bar{cfg: cfg, log: log, display: display, modCh: make(chan struct{}, 1), cfgCh: make(chan config.Config, 1)}
+	b := &Bar{cfg: cfg, log: log, display: display, modCh: make(chan struct{}, 1), cfgCh: make(chan config.Config, 1),
+		themeCh: make(chan struct{}, 1)}
 	var err error
-	if b.fg, err = config.ParseColor(cfg.Bar.Foreground); err != nil {
-		return nil, err
-	}
-	if b.bg, err = config.ParseColor(cfg.Bar.Background); err != nil {
+	if err = b.loadTheme(); err != nil {
 		return nil, err
 	}
 	if b.fonts, err = findFonts(cfg.Bar.Font, log); err != nil {
@@ -115,6 +122,85 @@ func New(cfg config.Config, log *slog.Logger, display string) (*Bar, error) {
 	return b, nil
 }
 
+// barColors picks the bar's own colors: the settings win, otherwise the theme
+// foreground, and a background one step toward the foreground so the bar
+// stands out from a terminal window of the same theme.
+func barColors(cfg config.Config, th theme.Theme) (fg, bg [3]uint8) {
+	fg, bg = th.Foreground, theme.Mix(th.Background, th.Foreground, 0.07)
+	if c, err := config.ParseColor(cfg.Bar.Foreground); err == nil && cfg.Bar.Foreground != "" {
+		fg = c
+	}
+	if c, err := config.ParseColor(cfg.Bar.Background); err == nil && cfg.Bar.Background != "" {
+		bg = c
+	}
+	return fg, bg
+}
+
+// loadTheme resolves bar.theme and applies it. When the theme cannot be read
+// the built-in colors are used, and the problem is logged.
+func (b *Bar) loadTheme() error {
+	base := filepath.Dir(b.cfgPath)
+	if b.cfgPath == "" {
+		base = "."
+	}
+	th, err := theme.Resolve(b.cfg.Bar.Theme, base, theme.SystemEnv())
+	if err != nil {
+		b.log.Warn("theme not found; using the built-in colors", "theme", b.cfg.Bar.Theme, "err", err)
+	} else {
+		b.log.Info("theme", "source", th.Source)
+	}
+	b.setTheme(th)
+	return nil
+}
+
+// setTheme makes th the colors of the bar and of its scripts.
+func (b *Bar) setTheme(th theme.Theme) {
+	b.theme = th
+	b.fg, b.bg = barColors(b.cfg, th)
+	b.pal = th.Palette
+	b.env = th.EnvVars(b.bg, b.fg)
+	if b.lay != nil {
+		b.lay.SetColors(b.fg, b.bg, b.pal)
+	}
+	b.dirty = true
+	b.watchTheme()
+}
+
+// watchTheme watches every file the theme was read from, so changing the
+// terminal's theme changes the bar.
+func (b *Bar) watchTheme() {
+	if b.themeCancel != nil {
+		b.themeCancel()
+	}
+	if b.runCtx == nil {
+		return // Run has not started; it calls this again
+	}
+	ctx, cancel := context.WithCancel(b.runCtx)
+	b.themeCancel = cancel
+	for _, f := range b.theme.Files {
+		go func() { _ = fswatch.Watch(ctx, f, 150*time.Millisecond, b.themeCh) }()
+	}
+}
+
+// reloadTheme re-reads the theme after one of its files changed.
+func (b *Bar) reloadTheme() {
+	base := filepath.Dir(b.cfgPath)
+	if b.cfgPath == "" {
+		base = "."
+	}
+	th, err := theme.Resolve(b.cfg.Bar.Theme, base, theme.SystemEnv())
+	if err != nil {
+		b.log.Warn("theme reload failed; keeping the current colors", "err", err)
+		return
+	}
+	if th.Equal(b.theme) {
+		return
+	}
+	b.log.Info("theme changed", "source", th.Source)
+	b.setTheme(th)
+	b.syncModules(b.cfg.Module) // scripts get the new colors in their environment
+}
+
 // WatchConfig makes Run reload the config file at path when it changes. Call
 // it before Run.
 func (b *Bar) WatchConfig(path string) { b.cfgPath = path }
@@ -122,6 +208,7 @@ func (b *Bar) WatchConfig(path string) { b.cfgPath = path }
 // runner is one started module and how to stop it.
 type runner struct {
 	cfg    config.Module
+	env    []string
 	m      *module.Module
 	cancel context.CancelFunc
 }
@@ -140,7 +227,7 @@ func (b *Bar) syncModules(want []config.Module) {
 	for _, w := range want {
 		if r, ok := old[w.Name]; ok {
 			delete(old, w.Name)
-			if r.cfg == w {
+			if r.cfg == w && slices.Equal(r.env, b.env) {
 				next = append(next, r)
 				continue
 			}
@@ -148,8 +235,9 @@ func (b *Bar) syncModules(want []config.Module) {
 		}
 		ctx, cancel := context.WithCancel(b.runCtx)
 		m := module.New(w.Name, zones[w.Zone], w.Exec, b.modCh, b.log)
+		m.Env = b.env
 		go m.Run(ctx)
-		next = append(next, runner{cfg: w, m: m, cancel: cancel})
+		next = append(next, runner{cfg: w, env: b.env, m: m, cancel: cancel})
 	}
 	for _, r := range old {
 		r.cancel()
@@ -167,16 +255,7 @@ func (b *Bar) syncModules(want []config.Module) {
 // applyConfig switches to next. Nothing changes if it cannot be applied.
 func (b *Bar) applyConfig(next config.Config) {
 	old := b.cfg
-	fg, err := config.ParseColor(next.Bar.Foreground)
-	if err != nil {
-		b.log.Warn("config not applied", "err", err)
-		return
-	}
-	bg, err := config.ParseColor(next.Bar.Background)
-	if err != nil {
-		b.log.Warn("config not applied", "err", err)
-		return
-	}
+	var err error
 	fontChanged := next.Bar.Font != old.Bar.Font
 	fonts := b.fonts
 	if fontChanged {
@@ -191,13 +270,10 @@ func (b *Bar) applyConfig(next config.Config) {
 	}
 	b.cfg = next
 	b.fonts = fonts
-	b.syncModules(next.Module)
-	if fg != b.fg || bg != b.bg {
-		b.fg, b.bg = fg, bg
-		if b.lay != nil {
-			b.lay.SetColors(fg, bg)
-		}
+	if err = b.loadTheme(); err != nil { // the theme setting or the colors may have changed
+		b.log.Warn("theme not applied", "err", err)
 	}
+	b.syncModules(next.Module)
 	b.dirty = true
 	if fontChanged || next.Bar.Size != old.Bar.Size || next.Bar.Scale != old.Bar.Scale {
 		b.facePx = -1 // reconcile rebuilds the font, and the surface if its height changed
@@ -224,6 +300,7 @@ func (b *Bar) Run(ctx context.Context) (err error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	b.runCtx = runCtx
+	b.watchTheme()
 	b.syncModules(b.cfg.Module)
 	if b.cfgPath != "" {
 		go func() {
@@ -244,6 +321,8 @@ func (b *Bar) Run(ctx context.Context) (err error) {
 			b.Stats.ModuleWake++
 		case next := <-b.cfgCh:
 			b.applyConfig(next)
+		case <-b.themeCh:
+			b.reloadTheme()
 		case <-b.settleC:
 			b.settleC, b.settling = nil, false
 			b.reconcile()
@@ -480,7 +559,7 @@ func (b *Bar) reconcile() {
 	b.rend, b.mappedW = rend, w
 	b.Stats.Rebuilds++
 	if b.lay == nil {
-		b.lay = layout.New(rend.Cols(), b.fg, b.bg, b.mods)
+		b.lay = layout.New(rend.Cols(), b.fg, b.bg, b.pal, b.mods)
 	} else {
 		b.lay.Resize(rend.Cols())
 	}

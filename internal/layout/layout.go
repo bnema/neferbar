@@ -24,13 +24,14 @@ type Source struct {
 type Layout struct {
 	cols    int
 	fg, bg  [3]uint8
+	pal     [16][3]uint8
 	sources []*Source
 	row     []gpu.Cell
 }
 
 // New builds a layout for a row of cols cells.
-func New(cols int, fg, bg [3]uint8, mods []*module.Module) *Layout {
-	l := &Layout{cols: cols, fg: fg, bg: bg, row: make([]gpu.Cell, cols)}
+func New(cols int, fg, bg [3]uint8, pal [16][3]uint8, mods []*module.Module) *Layout {
+	l := &Layout{cols: cols, fg: fg, bg: bg, pal: pal, row: make([]gpu.Cell, cols)}
 	l.SetModules(mods)
 	return l
 }
@@ -65,14 +66,15 @@ func (l *Layout) SetModules(mods []*module.Module) {
 	}
 }
 
-// SetColors changes the default colors and reparses every module's last frame.
-func (l *Layout) SetColors(fg, bg [3]uint8) {
-	l.fg, l.bg = fg, bg
+// SetColors changes the default colors and the 16-color palette, and reparses
+// every module's last frame.
+func (l *Layout) SetColors(fg, bg [3]uint8, pal [16][3]uint8) {
+	l.fg, l.bg, l.pal = fg, bg, pal
 	for _, s := range l.sources {
 		if s.failed {
 			s.cells = l.marker(s.cells[:0], s.M.Name)
 		} else if len(s.frame) > 0 {
-			s.parse(fg, bg)
+			s.parse(fg, bg, l.pal)
 		}
 	}
 }
@@ -88,7 +90,7 @@ func (l *Layout) Resize(cols int) {
 		if s.failed {
 			s.cells = l.marker(s.cells, s.M.Name)
 		} else if len(s.frame) > 0 {
-			s.parse(l.fg, l.bg)
+			s.parse(l.fg, l.bg, l.pal)
 		}
 	}
 }
@@ -109,7 +111,7 @@ func (l *Layout) Update() bool {
 			s.cells = l.marker(s.cells[:0], s.M.Name)
 			continue
 		}
-		s.parse(l.fg, l.bg)
+		s.parse(l.fg, l.bg, l.pal)
 	}
 	return changed
 }
@@ -127,7 +129,7 @@ func (l *Layout) marker(dst []gpu.Cell, name string) []gpu.Cell {
 	return dst
 }
 
-func (s *Source) parse(fg, bg [3]uint8) {
+func (s *Source) parse(fg, bg [3]uint8, pal [16][3]uint8) {
 	s.input = append(s.input[:0], "\x1b[0m\r\x1b[2K"...)
 	s.input = append(s.input, s.frame...)
 	s.screen.Write(s.input)
@@ -144,24 +146,24 @@ func (s *Source) parse(fg, bg [3]uint8) {
 	}
 	s.cells = s.cells[:0]
 	for x := 0; x < end; x++ {
-		s.cells = append(s.cells, convert(s.screen.Cell(x, 0), fg, bg))
+		s.cells = append(s.cells, convert(s.screen.Cell(x, 0), fg, bg, &pal))
 	}
 }
 
-func convert(c vt.Cell, defFG, defBG [3]uint8) gpu.Cell {
+func convert(c vt.Cell, defFG, defBG [3]uint8, pal *[16][3]uint8) gpu.Cell {
 	st := &c.Style
 	fg, bg := defFG, defBG
 	switch {
 	case st.HasForegroundRGB:
 		fg = [3]uint8{st.ForegroundRGB.R, st.ForegroundRGB.G, st.ForegroundRGB.B}
 	case st.Foreground >= 0:
-		fg = palette(st.Foreground)
+		fg = palette(st.Foreground, pal)
 	}
 	switch {
 	case st.HasBackgroundRGB:
 		bg = [3]uint8{st.BackgroundRGB.R, st.BackgroundRGB.G, st.BackgroundRGB.B}
 	case st.Background >= 0:
-		bg = palette(st.Background)
+		bg = palette(st.Background, pal)
 	}
 	if st.Inverse {
 		fg, bg = bg, fg

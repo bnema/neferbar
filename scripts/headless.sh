@@ -13,7 +13,7 @@ rm -f "$out"/*.png
 if [ -n "${SCALE:-}" ]; then
 	printf 'output.HEADLESS-1.scale = %s\n' "$SCALE" >"$root/config/neferwl/config"
 fi
-clean=(env -i PATH="$PATH" HOME="$root" XDG_RUNTIME_DIR="$root/run" XDG_CONFIG_HOME="$root/config" XDG_DATA_HOME="$root/data" XDG_STATE_HOME="$root/state")
+clean=(env -i PATH="$PATH" HOME="$root" XDG_RUNTIME_DIR="$root/run" XDG_CONFIG_HOME="$root/config" XDG_DATA_HOME="$root/data" XDG_STATE_HOME="$root/state" ${NEFERWL_STATE:+NEFERWL_STATE="$NEFERWL_STATE"})
 "${clean[@]}" neferwl --backend=headless --no-terminal --no-xwayland --size "${SIZE:-800x200}" --timeout "$((secs + 6))s" --screenshot "$out" >"$root/neferwl.log" 2>&1 &
 comp=$!
 trap 'kill $comp 2>/dev/null || true; wait $comp 2>/dev/null || true' EXIT

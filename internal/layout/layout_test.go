@@ -10,6 +10,8 @@ import (
 	"git.bnema.dev/bnema/neferbar/internal/racecheck"
 )
 
+var testPalette = [16][3]uint8{{1, 1, 1}, {255, 0, 0}, {0, 255, 0}, {255, 255, 0}, {0, 0, 255}}
+
 func newTestLayout(cols int) (*Layout, []*module.Module) {
 	wake := make(chan struct{}, 1)
 	log := slog.New(slog.DiscardHandler)
@@ -18,7 +20,7 @@ func newTestLayout(cols int) (*Layout, []*module.Module) {
 		module.New("c", module.Center, "true", wake, log),
 		module.New("r", module.Right, "true", wake, log),
 	}
-	return New(cols, [3]uint8{200, 200, 200}, [3]uint8{10, 10, 10}, mods), mods
+	return New(cols, [3]uint8{200, 200, 200}, [3]uint8{10, 10, 10}, testPalette, mods), mods
 }
 
 func publish(m *module.Module, text string) { module.PublishForTest(m, []byte(text)) }
@@ -137,5 +139,27 @@ func TestTextStyles(t *testing.T) {
 		if row[i].Style != w {
 			t.Errorf("cell %d (%q): style %04b, want %04b", i, row[i].Rune, row[i].Style, w)
 		}
+	}
+}
+
+func TestAnsiColorsComeFromThePalette(t *testing.T) {
+	l, m := newTestLayout(6)
+	publish(m[0], "\x1b[31mr\x1b[44mb\x1b[0m\x1b[38;5;2mg")
+	l.Update()
+	row := l.Compose()
+	if row[0].FG != testPalette[1] {
+		t.Errorf("\\e[31m = %v, want palette[1] %v", row[0].FG, testPalette[1])
+	}
+	if row[1].BG != testPalette[4] {
+		t.Errorf("\\e[44m background = %v, want palette[4] %v", row[1].BG, testPalette[4])
+	}
+	if row[2].FG != testPalette[2] {
+		t.Errorf("\\e[38;5;2m = %v, want palette[2] %v", row[2].FG, testPalette[2])
+	}
+	pal := testPalette
+	pal[1] = [3]uint8{9, 9, 9}
+	l.SetColors(l.fg, l.bg, pal)
+	if got := l.Compose()[0].FG; got != pal[1] {
+		t.Errorf("after SetColors, \\e[31m = %v, want %v", got, pal[1])
 	}
 }
