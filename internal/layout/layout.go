@@ -132,6 +132,11 @@ func (l *Layout) marker(dst []gpu.Cell, name string) []gpu.Cell {
 func (s *Source) parse(fg, bg [3]uint8, pal [16][3]uint8) {
 	s.input = append(s.input[:0], "\x1b[0m\r\x1b[2K"...)
 	s.input = append(s.input, s.frame...)
+	// A frame that ends inside an escape sequence (a script bug, or the frame
+	// cap cutting one) would leave the parser waiting, and it would swallow the
+	// next frames. ESC \ is the string terminator: it closes any such sequence,
+	// and is harmless after a complete one.
+	s.input = append(s.input, "\x1b\\"...)
 	s.screen.Write(s.input)
 	cols := s.screen.Columns()
 	// Trim trailing blank default cells so modules do not claim empty space.

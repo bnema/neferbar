@@ -163,3 +163,24 @@ func TestAnsiColorsComeFromThePalette(t *testing.T) {
 		t.Errorf("after SetColors, \\e[31m = %v, want %v", got, pal[1])
 	}
 }
+
+// A frame that stops inside an escape sequence must not blank the frames after it.
+func TestBrokenEscapeDoesNotSwallowNextFrames(t *testing.T) {
+	for name, broken := range map[string]string{
+		"osc":  "\x1b]0;title",
+		"csi":  "\x1b[38;2;1",
+		"dcs":  "\x1bP1;2",
+		"apc":  "\x1b_Gf=24",
+		"esc":  "\x1b",
+		"utf8": "ab\xe2\x82",
+	} {
+		l, m := newTestLayout(10)
+		publish(m[0], broken)
+		l.Update()
+		publish(m[0], "hello")
+		l.Update()
+		if got := rowText(l); got[:5] != "hello" {
+			t.Errorf("%s: row after the next frame = %q, want hello", name, got)
+		}
+	}
+}

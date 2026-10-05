@@ -5,6 +5,8 @@ import (
 	"context"
 	"git.bnema.dev/bnema/neferbar/internal/racecheck"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -79,5 +81,33 @@ func TestPublishAllocs(t *testing.T) {
 		dst, _, _ = m.Take(dst)
 	}); got > 0 {
 		t.Errorf("publish+Take allocates %.1f objects; want 0", got)
+	}
+}
+
+// Stopping a module must also end the processes the script started, and Wait
+// must return once they are gone.
+func TestStopEndsTheScriptsChildren(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "alive")
+	// A background loop in a subshell: it outlives "sh" unless the whole group is killed.
+	script := "(while :; do echo x > " + marker + "; sleep 0.05; done) & wait"
+	m := New("t", Left, script, make(chan struct{}, 1), slog.New(slog.DiscardHandler))
+	ctx, cancel := context.WithCancel(context.Background())
+	m.Start(ctx)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the script never started")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	m.Wait(5 * time.Second)
+	os.Remove(marker)
+	time.Sleep(300 * time.Millisecond)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a child of the script is still running after Wait returned")
 	}
 }

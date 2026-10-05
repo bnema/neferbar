@@ -52,6 +52,8 @@ type Module struct {
 
 	wake chan<- struct{}
 	log  *slog.Logger
+
+	done sync.WaitGroup // Start adds one; Run releases it when its process is gone
 }
 
 // New creates a module. wake receives a non-blocking signal after each frame.
@@ -98,8 +100,28 @@ func (m *Module) setFailed() {
 	m.signal()
 }
 
+// Start runs the module on its own goroutine until ctx ends. Wait returns once
+// the script and the processes it started are gone.
+func (m *Module) Start(ctx context.Context) {
+	m.done.Add(1)
+	go func() {
+		defer m.done.Done()
+		m.Run(ctx)
+	}()
+}
+
+// Wait blocks until a module started with Start has stopped, or timeout passes.
+func (m *Module) Wait(timeout time.Duration) {
+	ch := make(chan struct{})
+	go func() { m.done.Wait(); close(ch) }()
+	select {
+	case <-ch:
+	case <-time.After(timeout):
+	}
+}
+
 // Run starts the script and restarts it with backoff until ctx ends. It
-// blocks, so call it on its own goroutine.
+// blocks, so call it on its own goroutine; use Start to also be able to Wait.
 func (m *Module) Run(ctx context.Context) {
 	backoff := minBackoff
 	for ctx.Err() == nil {
@@ -137,7 +159,11 @@ func (m *Module) runOnce(ctx context.Context) error {
 		return err
 	}
 	m.readFrames(out)
-	return cmd.Wait()
+	err = cmd.Wait()
+	// The script may have started children that kept running (a "while" loop
+	// in a subshell, a "sleep"). They share the process group: end them too.
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	return err
 }
 
 // readFrames splits r into frames and publishes each one.
@@ -178,7 +204,11 @@ type logWriter struct {
 }
 
 func (w *logWriter) Write(p []byte) (int, error) {
-	w.log.Info("module stderr", "module", w.name, "text", string(bytes.TrimRight(p, "\n")))
+	text := bytes.TrimRight(p, "\n")
+	if len(text) > 1024 {
+		text = append(text[:1024:1024], "..."...)
+	}
+	w.log.Info("module stderr", "module", w.name, "text", string(text))
 	return len(p), nil
 }
 
