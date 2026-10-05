@@ -1,3 +1,4 @@
+# shellcheck shell=bash disable=SC2034
 # Shared helpers for the bundled modules. Source this file: . "$(dirname "$0")/lib.sh"
 #
 # The bar gives every script its colors, each as #rrggbb, so a script never

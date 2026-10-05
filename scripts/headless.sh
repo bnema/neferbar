@@ -19,7 +19,10 @@ clean=(env -i PATH="$PATH" HOME="$root" XDG_RUNTIME_DIR="$root/run" XDG_CONFIG_H
 comp=$!
 trap 'kill $comp 2>/dev/null || true; wait $comp 2>/dev/null || true' EXIT
 for _ in $(seq 100); do
-	sock=$(ls "$root"/run/wayland-* 2>/dev/null | grep -v lock | head -1 || true)
+	sock=""
+	for f in "$root"/run/wayland-*; do
+		[ -e "$f" ] && [[ $f != *.lock ]] && sock=$f && break
+	done
 	[ -n "$sock" ] && break
 	sleep 0.1
 done
