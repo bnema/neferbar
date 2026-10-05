@@ -1,0 +1,184 @@
+// Package module runs scripts that print ANSI frames on stdout.
+//
+// A frame ends at '\n' or '\f'. Only the most recent frame matters: a module
+// that prints faster than the bar draws simply overwrites its pending frame,
+// so a chatty script costs no memory and no allocation.
+package module
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"log/slog"
+	"os"
+	"os/exec"
+	"sync"
+	"syscall"
+	"time"
+)
+
+const (
+	// MaxFrame bounds one frame; longer lines are truncated.
+	MaxFrame = 16 << 10
+	readSize = 32 << 10
+
+	minBackoff = 500 * time.Millisecond
+	maxBackoff = 30 * time.Second
+	// stableRun is how long a script must run before its backoff resets.
+	stableRun = 10 * time.Second
+)
+
+// Zone is where a module's text is placed.
+type Zone uint8
+
+const (
+	Left Zone = iota
+	Center
+	Right
+)
+
+// Module is one running script.
+type Module struct {
+	Name string
+	Zone Zone
+	Exec string
+
+	mu      sync.Mutex
+	pending []byte // latest complete frame
+	dirty   bool
+	failed  bool // the script is not running; show an error marker
+
+	wake chan<- struct{}
+	log  *slog.Logger
+}
+
+// New creates a module. wake receives a non-blocking signal after each frame.
+func New(name string, zone Zone, command string, wake chan<- struct{}, log *slog.Logger) *Module {
+	return &Module{Name: name, Zone: zone, Exec: command, wake: wake, log: log,
+		pending: make([]byte, 0, MaxFrame)}
+}
+
+// Take copies the pending frame into dst (reusing its capacity) and clears the
+// dirty flag. changed is false when nothing new arrived. failed reports that
+// the script is down.
+func (m *Module) Take(dst []byte) (_ []byte, changed, failed bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	failed = m.failed
+	if !m.dirty {
+		return dst, false, failed
+	}
+	m.dirty = false
+	return append(dst[:0], m.pending...), true, failed
+}
+
+func (m *Module) signal() {
+	select {
+	case m.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (m *Module) publish(frame []byte) {
+	m.mu.Lock()
+	m.pending = append(m.pending[:0], frame...)
+	m.dirty = true
+	m.failed = false
+	m.mu.Unlock()
+	m.signal()
+}
+
+func (m *Module) setFailed() {
+	m.mu.Lock()
+	m.failed = true
+	m.dirty = true
+	m.mu.Unlock()
+	m.signal()
+}
+
+// Run starts the script and restarts it with backoff until ctx ends. It
+// blocks, so call it on its own goroutine.
+func (m *Module) Run(ctx context.Context) {
+	backoff := minBackoff
+	for ctx.Err() == nil {
+		started := time.Now()
+		err := m.runOnce(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		m.log.Warn("module exited", "module", m.Name, "err", err)
+		m.setFailed()
+		if time.Since(started) > stableRun {
+			backoff = minBackoff
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, maxBackoff)
+	}
+}
+
+func (m *Module) runOnce(ctx context.Context) error {
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", m.Exec)
+	cmd.Stderr = &logWriter{log: m.log, name: m.Name}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGTERM}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
+	cmd.WaitDelay = 2 * time.Second
+	cmd.Env = append(os.Environ(), "NEFERBAR_MODULE="+m.Name)
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err = cmd.Start(); err != nil {
+		return err
+	}
+	m.readFrames(out)
+	return cmd.Wait()
+}
+
+// readFrames splits r into frames and publishes each one.
+func (m *Module) readFrames(r io.Reader) {
+	buf := make([]byte, readSize)
+	frame := make([]byte, 0, MaxFrame)
+	for {
+		n, err := r.Read(buf)
+		chunk := buf[:n]
+		for len(chunk) > 0 {
+			i := bytes.IndexAny(chunk, "\n\f")
+			if i < 0 {
+				frame = appendCapped(frame, chunk)
+				break
+			}
+			frame = appendCapped(frame, chunk[:i])
+			m.publish(frame)
+			frame = frame[:0]
+			chunk = chunk[i+1:]
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func appendCapped(dst, src []byte) []byte {
+	if room := MaxFrame - len(dst); len(src) > room {
+		src = src[:max(room, 0)]
+	}
+	return append(dst, src...)
+}
+
+// logWriter forwards a script's stderr lines to the bar's log.
+type logWriter struct {
+	log  *slog.Logger
+	name string
+}
+
+func (w *logWriter) Write(p []byte) (int, error) {
+	w.log.Info("module stderr", "module", w.name, "text", string(bytes.TrimRight(p, "\n")))
+	return len(p), nil
+}
+
+// PublishForTest injects a frame as if the script had printed it.
+func PublishForTest(m *Module, frame []byte) { m.publish(frame) }
