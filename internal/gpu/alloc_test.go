@@ -5,9 +5,9 @@ import (
 	"syscall"
 	"testing"
 
-	"git.bnema.dev/bnema/neferbar/internal/glyph"
-	"git.bnema.dev/bnema/neferbar/internal/racecheck"
-	"git.bnema.dev/bnema/neferbar/internal/syncobj"
+	"github.com/bnema/neferbar/internal/glyph"
+	"github.com/bnema/neferbar/internal/racecheck"
+	"github.com/bnema/neferbar/internal/syncobj"
 )
 
 // newTestRenderer needs a Vulkan device with DMA-BUF export; it skips without one.

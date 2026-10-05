@@ -3,7 +3,7 @@ package module
 import (
 	"bytes"
 	"context"
-	"git.bnema.dev/bnema/neferbar/internal/racecheck"
+	"github.com/bnema/neferbar/internal/racecheck"
 	"log/slog"
 	"os"
 	"path/filepath"

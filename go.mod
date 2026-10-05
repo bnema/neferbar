@@ -1,4 +1,4 @@
-module git.bnema.dev/bnema/neferbar
+module github.com/bnema/neferbar
 
 go 1.27
 

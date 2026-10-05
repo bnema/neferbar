@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"time"
 
-	"git.bnema.dev/bnema/neferbar/internal/fswatch"
+	"github.com/bnema/neferbar/internal/fswatch"
 )
 
 // debounce waits for a save to finish before the file is read.

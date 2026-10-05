@@ -4,9 +4,9 @@ package layout
 import (
 	vt "github.com/bnema/vev-vt"
 
-	"git.bnema.dev/bnema/neferbar/internal/glyph"
-	"git.bnema.dev/bnema/neferbar/internal/gpu"
-	"git.bnema.dev/bnema/neferbar/internal/module"
+	"github.com/bnema/neferbar/internal/glyph"
+	"github.com/bnema/neferbar/internal/gpu"
+	"github.com/bnema/neferbar/internal/module"
 )
 
 // Source is one module and the cells parsed from its latest frame.

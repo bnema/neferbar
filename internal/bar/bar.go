@@ -22,14 +22,14 @@ import (
 
 	"github.com/bnema/neferclient"
 
-	"git.bnema.dev/bnema/neferbar/internal/config"
-	"git.bnema.dev/bnema/neferbar/internal/fswatch"
-	"git.bnema.dev/bnema/neferbar/internal/glyph"
-	"git.bnema.dev/bnema/neferbar/internal/gpu"
-	"git.bnema.dev/bnema/neferbar/internal/layout"
-	"git.bnema.dev/bnema/neferbar/internal/module"
-	"git.bnema.dev/bnema/neferbar/internal/syncobj"
-	"git.bnema.dev/bnema/neferbar/internal/theme"
+	"github.com/bnema/neferbar/internal/config"
+	"github.com/bnema/neferbar/internal/fswatch"
+	"github.com/bnema/neferbar/internal/glyph"
+	"github.com/bnema/neferbar/internal/gpu"
+	"github.com/bnema/neferbar/internal/layout"
+	"github.com/bnema/neferbar/internal/module"
+	"github.com/bnema/neferbar/internal/syncobj"
+	"github.com/bnema/neferbar/internal/theme"
 )
 
 const acquireTimelineID = 1 << 32

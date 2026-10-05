@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"testing"
 
-	"git.bnema.dev/bnema/neferbar/internal/glyph"
-	"git.bnema.dev/bnema/neferbar/internal/module"
-	"git.bnema.dev/bnema/neferbar/internal/racecheck"
+	"github.com/bnema/neferbar/internal/glyph"
+	"github.com/bnema/neferbar/internal/module"
+	"github.com/bnema/neferbar/internal/racecheck"
 )
 
 var testPalette = [16][3]uint8{{1, 1, 1}, {255, 0, 0}, {0, 255, 0}, {255, 255, 0}, {0, 0, 255}}

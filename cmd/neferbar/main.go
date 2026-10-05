@@ -16,8 +16,8 @@ import (
 	"syscall"
 	"time"
 
-	"git.bnema.dev/bnema/neferbar/internal/bar"
-	"git.bnema.dev/bnema/neferbar/internal/config"
+	"github.com/bnema/neferbar/internal/bar"
+	"github.com/bnema/neferbar/internal/config"
 )
 
 func main() {

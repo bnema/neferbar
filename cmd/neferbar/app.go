@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"git.bnema.dev/bnema/neferbar/internal/app"
+	"github.com/bnema/neferbar/internal/app"
 )
 
 const appUsage = `usage: neferbar app [-once] <field>...

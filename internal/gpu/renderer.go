@@ -10,9 +10,9 @@ import (
 	"github.com/bnema/purego-vulkan/vulkan"
 	"golang.org/x/sys/unix"
 
-	"git.bnema.dev/bnema/neferbar/internal/glyph"
-	"git.bnema.dev/bnema/neferbar/internal/gpu/shaders"
-	"git.bnema.dev/bnema/neferbar/internal/syncobj"
+	"github.com/bnema/neferbar/internal/glyph"
+	"github.com/bnema/neferbar/internal/gpu/shaders"
+	"github.com/bnema/neferbar/internal/syncobj"
 )
 
 const (
