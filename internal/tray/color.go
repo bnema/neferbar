@@ -1,6 +1,15 @@
 package tray
 
-import "math"
+import (
+	"math"
+
+	"github.com/bnema/neferbar/internal/theme"
+)
+
+// maxSamples caps the pixels counted per icon: enough for a color, and it
+// keeps the sums below 2^32 (4096 * 255 * 255) and the cost of a large icon
+// low.
+const maxSamples = 4096
 
 // histogram finds the dominant color of an icon. Colors are counted in 4096
 // buckets (4 bits per channel), weighted by opacity and saturation so a logo's
@@ -13,14 +22,15 @@ type histogram struct {
 
 // dominant returns the dominant color of argb, an SNI pixmap: big-endian
 // ARGB32, 4 bytes per pixel. It reports false when the icon is empty, fully
-// transparent or grey.
+// transparent or grey. Large icons are sampled evenly.
 func (h *histogram) dominant(argb []byte) (RGB, bool) {
 	if len(argb) < 4 {
 		return RGB{}, false
 	}
 	clear(h.weight[:])
 	clear(h.sum[:])
-	for i := 0; i+3 < len(argb); i += 4 {
+	step := 4 * ((len(argb)/4 + maxSamples - 1) / maxSamples)
+	for i := 0; i+3 < len(argb); i += step {
 		a, r, g, b := uint32(argb[i]), uint32(argb[i+1]), uint32(argb[i+2]), uint32(argb[i+3])
 		if a < 128 {
 			continue
@@ -56,17 +66,9 @@ func (h *histogram) dominant(argb []byte) (RGB, bool) {
 func readable(c, bg, fg RGB) RGB {
 	const minContrast = 3.0 // WCAG's minimum for large text and icons
 	for i := 0; i < 10 && contrast(c, bg) < minContrast; i++ {
-		c = mix(c, fg, 0.25)
+		c = theme.Mix(c, fg, 0.25)
 	}
 	return c
-}
-
-func mix(a, b RGB, t float64) RGB {
-	var out RGB
-	for i := range out {
-		out[i] = uint8(math.Round(float64(a[i]) + (float64(b[i])-float64(a[i]))*t))
-	}
-	return out
 }
 
 // contrast is the WCAG contrast ratio of two colors, from 1 to 21.

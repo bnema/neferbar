@@ -1,6 +1,7 @@
 package glyph
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"slices"
@@ -54,19 +55,10 @@ func LoadNames(path string) (*Names, error) {
 		}
 	}
 	slices.SortFunc(n.idx, func(a, b nameEntry) int {
-		x, y := n.name(a), n.name(b)
-		switch {
-		case x < y:
-			return -1
-		case x > y:
-			return 1
-		}
-		return 0
+		return bytes.Compare(n.data[a.off:a.off+a.n], n.data[b.off:b.off+b.n])
 	})
 	return n, nil
 }
-
-func (n *Names) name(e nameEntry) string { return string(n.data[e.off : e.off+e.n]) }
 
 // Lookup returns the rune of the glyph called name.
 func (n *Names) Lookup(name string) (rune, bool) {

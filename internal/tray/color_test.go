@@ -36,6 +36,15 @@ func TestDominant(t *testing.T) {
 	}
 }
 
+func TestDominantLargeIcon(t *testing.T) {
+	// 512x512 of one saturated color: summing every pixel would overflow.
+	var h histogram
+	icon := pixmap(map[[4]uint8]int{{255, 250, 20, 20}: 512 * 512})
+	if got, ok := h.dominant(icon); !ok || got != (RGB{250, 20, 20}) {
+		t.Fatalf("dominant = %v, %v", got, ok)
+	}
+}
+
 func TestReadable(t *testing.T) {
 	bg, fg := RGB{0x1e, 0x1e, 0x2e}, RGB{0xcd, 0xd6, 0xf4}
 	dark := RGB{0x17, 0x1a, 0x21} // Steam's near-black blue

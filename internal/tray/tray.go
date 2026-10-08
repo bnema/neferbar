@@ -64,7 +64,8 @@ type item struct {
 
 	id, iconName, title string
 	status              status
-	icon                string // resolved glyph
+	icon                string // resolved glyph; "" hides the item
+	resolved            bool
 	color               RGB
 	hasColor            bool
 	loaded              bool   // GetAll answered at least once
@@ -118,7 +119,8 @@ func Run(ctx context.Context, c *zerobus.Conn, opt Options) error {
 	c.Handle = t.dispatch
 	for _, rule := range [...]string{
 		"type='signal',interface='" + itemIface + "'",
-		"type='signal',interface='" + watcherIface + "'",
+		// The bus matches a well-known sender by its current owner.
+		"type='signal',sender='" + watcherName + "',interface='" + watcherIface + "'",
 		"type='signal',sender='" + busName + "',interface='" + busName + "',member='NameOwnerChanged'",
 	} {
 		if err := c.AddMatch(rule); err != nil {
@@ -130,7 +132,7 @@ func Run(ctx context.Context, c *zerobus.Conn, opt Options) error {
 	}
 	t.claim()
 	if err := t.render(true); err != nil {
-		return err
+		return t.exit(ctx, err)
 	}
 	for t.err == nil {
 		m, err := c.ReadMessage()
@@ -139,7 +141,8 @@ func Run(ctx context.Context, c *zerobus.Conn, opt Options) error {
 		}
 		t.dispatch(m)
 	}
-	return t.err
+	// A send fails too when ctx ends during dispatch and closes c.
+	return t.exit(ctx, t.err)
 }
 
 // exit returns nil when the error comes from ctx ending.
@@ -206,7 +209,7 @@ func (t *Tray) reply(p pend, m *zerobus.Message) {
 	switch p.kind {
 	case pendName:
 		code := m.Body().Uint32()
-		if !failed && (code == zerobus.NamePrimaryOwner || code == zerobus.NameAlreadyOwner) {
+		if !failed && m.Signature == "u" && (code == zerobus.NamePrimaryOwner || code == zerobus.NameAlreadyOwner) {
 			t.becomeWatcher()
 			return
 		}
@@ -217,12 +220,13 @@ func (t *Tray) reply(p pend, m *zerobus.Message) {
 			return
 		}
 		r := m.Body()
-		if r.Variant() != "as" {
+		if m.Signature != "v" || r.Variant() != "as" {
+			t.opt.Log.Warn("tray: the watcher listed its items in an unknown form")
 			return
 		}
 		end := r.Array('s')
 		for r.More(end) {
-			t.add(r.Str(), "", "")
+			t.add(r.Str(), "")
 		}
 	case pendGetAll:
 		it := p.it
@@ -230,8 +234,8 @@ func (t *Tray) reply(p pend, m *zerobus.Message) {
 			return // removed, or an older request
 		}
 		it.pending = 0
-		if failed {
-			t.opt.Log.Info("tray: item did not answer", "item", it.service, "err", m.ErrorName)
+		if failed || m.Signature != "a{sv}" {
+			t.opt.Log.Info("tray: item did not answer", "item", it.service, "err", m.ErrorName, "signature", m.Signature)
 			if !it.loaded {
 				t.remove(it)
 			}
@@ -273,11 +277,17 @@ func (t *Tray) signal(m *zerobus.Message) {
 			return
 		}
 		r := m.Body()
-		name, _, owner := r.Str(), r.Str(), r.Str()
-		if r.Err() != nil || owner != "" {
-			return
+		name, old, owner := r.Str(), r.Str(), r.Str()
+		switch {
+		case r.Err() != nil:
+		case owner == "":
+			t.vanished(name)
+		case name == watcherName && old != "" && !t.watcher && owner != t.c.UniqueName():
+			// Another watcher replaced the one we used: its items are
+			// the ones to show now.
+			t.dropAll()
+			t.becomeHost()
 		}
-		t.vanished(name)
 	case watcherIface:
 		if t.watcher || m.Signature != "s" {
 			return // our own signals come back to us too
@@ -285,13 +295,18 @@ func (t *Tray) signal(m *zerobus.Message) {
 		s := m.Body().Str()
 		switch m.Member {
 		case "StatusNotifierItemRegistered":
-			t.add(s, "", "")
+			t.add(s, "")
 		case "StatusNotifierItemUnregistered":
-			if i := slices.IndexFunc(t.items, func(it *item) bool { return it.service == s }); i >= 0 {
+			svc, _, _ := normService(s)
+			if i := slices.IndexFunc(t.items, func(it *item) bool { return it.service == svc }); i >= 0 {
 				t.remove(t.items[i])
 			}
 		}
 	case itemIface:
+		switch m.Member {
+		case "NewToolTip", "NewMenu", "NewOverlayIcon":
+			return // nothing the tray shows
+		}
 		for _, it := range t.items {
 			if it.owner == m.Sender && it.path == m.Path {
 				t.refresh(it)
@@ -316,38 +331,61 @@ func (t *Tray) vanished(name string) {
 	}
 	if name == watcherName && !t.watcher {
 		// Items register again with the new watcher.
-		for i := len(t.items) - 1; i >= 0; i-- {
-			t.drop(i)
-		}
-		t.renderOrFail()
+		t.dropAll()
 		t.claim()
 	}
 }
 
+func (t *Tray) dropAll() {
+	if len(t.items) == 0 {
+		return
+	}
+	for i := len(t.items) - 1; i >= 0; i-- {
+		t.drop(i)
+	}
+	t.renderOrFail()
+}
+
+// normService turns the watcher's form of an item, "bus/path" or "bus", into
+// "bus/path", its bus and its path.
+func normService(s string) (service, bus, path string) {
+	bus, p, ok := strings.Cut(s, "/")
+	if !ok {
+		return bus + itemPath, bus, itemPath
+	}
+	return s, bus, "/" + p
+}
+
+// addResult says what add did.
+type addResult uint8
+
+const (
+	addNew addResult = iota
+	addKnown
+	addInvalid // D-Bus refuses its bus name or path
+)
+
 // add starts tracking an item. service is the watcher's form, "bus/path" or
 // "bus"; owner is its unique name when known.
-func (t *Tray) add(service, owner, path string) {
-	if path == "" {
-		bus, p, ok := strings.Cut(service, "/")
-		if ok {
-			path = "/" + p
-		} else {
-			path = itemPath
-		}
-		service = bus + path
-		if owner == "" && strings.HasPrefix(bus, ":") {
-			owner = bus
-		}
+func (t *Tray) add(service, owner string) addResult {
+	service, dest, path := normService(service)
+	if owner == "" && strings.HasPrefix(dest, ":") {
+		owner = dest
 	}
-	dest, _, _ := strings.Cut(service, "/")
 	for _, it := range t.items {
 		if it.service == service || owner != "" && it.owner == owner && it.path == path {
-			return
+			return addKnown
 		}
 	}
 	it := &item{service: strings.Clone(service), dest: strings.Clone(dest), owner: strings.Clone(owner), path: strings.Clone(path)}
 	t.items = append(t.items, it)
 	t.refresh(it)
+	if it.pending == 0 {
+		// Never shown nor announced: forget it quietly.
+		t.items = t.items[:len(t.items)-1]
+		return addInvalid
+	}
+	return addNew
 }
 
 func (t *Tray) remove(it *item) {
@@ -422,8 +460,8 @@ func (t *Tray) load(it *item, r *zerobus.Reader) {
 	if it.hasColor {
 		it.color = readable(it.color, t.opt.Background, t.opt.Foreground)
 	}
-	if it.icon == "" || it.id != was.id || it.iconName != was.iconName || it.title != was.title {
-		it.icon = t.opt.Resolver.Resolve(it.id, it.iconName, it.title)
+	if !it.resolved || it.id != was.id || it.iconName != was.iconName || it.title != was.title {
+		it.icon, it.resolved = t.opt.Resolver.Resolve(it.id, it.iconName, it.title), true
 	}
 	t.renderOrFail()
 }
@@ -493,20 +531,22 @@ func (t *Tray) call(m *zerobus.Message) {
 			t.errorReply(m, noReply, "org.freedesktop.DBus.Error.InvalidArgs", "empty service")
 			return
 		}
-		if !noReply {
-			t.c.NewReply(m, "")
+		if strings.HasPrefix(s, "/") {
+			s = m.Sender + s // registered by object path
+		} else {
+			s += itemPath
+		}
+		// add copies s before the next read, and sends only a GetAll.
+		switch t.add(s, m.Sender) {
+		case addInvalid:
+			t.errorReply(m, noReply, "org.freedesktop.DBus.Error.InvalidArgs", "invalid service")
+			return
+		case addNew:
+			t.c.NewSignal(watcherPath, watcherIface, "StatusNotifierItemRegistered", "s").Str(t.items[len(t.items)-1].service)
 			t.send()
 		}
-		var owner, path string
-		if strings.HasPrefix(s, "/") {
-			owner, path, s = m.Sender, s, m.Sender+s // registered by object path
-		} else {
-			owner, path, s = m.Sender, itemPath, s+itemPath
-		}
-		n := len(t.items)
-		t.add(s, owner, path)
-		if len(t.items) > n {
-			t.c.NewSignal(watcherPath, watcherIface, "StatusNotifierItemRegistered", "s").Str(t.items[n].service)
+		if !noReply {
+			t.c.NewReply(m, "")
 			t.send()
 		}
 	case m.Interface == watcherIface && m.Member == "RegisterStatusNotifierHost":
@@ -599,7 +639,7 @@ func (t *Tray) renderOrFail() {
 func (t *Tray) render(force bool) error {
 	f := t.frame[:0]
 	for _, it := range t.items {
-		if !it.loaded || it.status == passive {
+		if !it.loaded || it.status == passive || it.icon == "" {
 			continue
 		}
 		if len(f) > 0 {

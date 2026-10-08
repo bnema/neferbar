@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -12,8 +13,8 @@ import (
 // so a new application needs no table entry:
 //
 //  1. the user's [tray.icons] override;
-//  2. a Nerd Font glyph named after the application, such as "fa-steam";
-//  3. a glyph for a common status icon name, such as "audio-volume-muted";
+//  2. a glyph for a freedesktop status icon name, such as "audio-volume-muted";
+//  3. a Nerd Font glyph named after the application, such as "fa-steam";
 //  4. a glyph for the category of its .desktop file, such as Game;
 //  5. a letter in a circle.
 type Resolver struct {
@@ -21,6 +22,7 @@ type Resolver struct {
 	icons    map[string]string // lowercased keys
 	dataDirs []string
 	apps     map[string]*desktopApp // nil until the first lookup
+	loaded   time.Time              // when apps was read
 }
 
 // desktopApp is what the resolver uses from a .desktop file.
@@ -28,6 +30,7 @@ type desktopApp struct {
 	name       string
 	words      []string // file name, Icon and StartupWMClass, lowercased
 	categories []string
+	hidden     bool // Hidden=true: the application counts as deleted
 }
 
 // NewResolver returns a resolver that finds glyphs with lookup (a font's
@@ -57,14 +60,30 @@ var stopwords = map[string]bool{
 	"ayatana": true, "notification": true, "electron": true, "bin": true,
 }
 
-// statusIcons maps words of themed icon names to glyphs, most specific first.
+// statusIcons maps freedesktop status icon names, by prefix, to glyphs, most
+// specific first. A prefix matches whole dash-separated parts, so
+// "signal-desktop" or "evolution-mail" are not status icons.
 var statusIcons = [...][2]string{
-	{"muted", "md-volume_off"}, {"volume", "md-volume_high"}, {"audio", "md-volume_high"},
-	{"microphone", "md-microphone"}, {"mic", "md-microphone"},
+	{"audio-volume-muted", "md-volume_off"}, {"audio-volume", "md-volume_high"},
+	{"microphone-sensitivity-muted", "md-microphone_off"}, {"microphone-sensitivity", "md-microphone"},
+	{"audio-input-microphone-muted", "md-microphone_off"}, {"audio-input-microphone", "md-microphone"},
 	{"bluetooth", "md-bluetooth"}, {"battery", "md-battery"},
-	{"vpn", "md-vpn"}, {"wired", "md-lan"}, {"ethernet", "md-lan"},
-	{"wireless", "md-wifi"}, {"wifi", "md-wifi"}, {"signal", "md-wifi"}, {"network", "md-lan"},
-	{"update", "md-update"}, {"updates", "md-update"}, {"mail", "md-email"},
+	{"network-vpn", "md-vpn"}, {"nm-vpn", "md-vpn"}, {"network-wired", "md-lan"}, {"nm-device-wired", "md-lan"},
+	{"network-wireless", "md-wifi"}, {"nm-signal", "md-wifi"}, {"nm-device-wireless", "md-wifi"},
+	{"network", "md-lan"},
+	{"software-update", "md-update"}, {"system-software-update", "md-update"},
+	{"mail-unread", "md-email"}, {"mail-read", "md-email"}, {"mail-message-new", "md-email"},
+}
+
+// statusIcon returns the glyph name for a status icon name, or "".
+func statusIcon(iconName string) string {
+	n := strings.ToLower(iconName)
+	for _, s := range statusIcons {
+		if rest, ok := strings.CutPrefix(n, s[0]); ok && (rest == "" || rest[0] == '-') {
+			return s[1]
+		}
+	}
+	return ""
 }
 
 // categories maps .desktop categories to glyphs, most specific first: an
@@ -82,7 +101,8 @@ var categories = [...][2]string{
 
 // Resolve returns the icon text of an item: one glyph, or the user's
 // override. id, iconName and title are the item's properties; any may be
-// empty.
+// empty. A title can say anything ("Sync complete"), so it only counts as a
+// whole name, after the stronger signals.
 func (r *Resolver) Resolve(id, iconName, title string) string {
 	if strings.HasPrefix(iconName, "/") {
 		iconName = "" // a file path names no application
@@ -93,24 +113,19 @@ func (r *Resolver) Resolve(id, iconName, title string) string {
 			return r.glyphOr(v, v)
 		}
 	}
-	app := r.app(keys[:])
+	app := r.app(id, iconName, title)
 	if app != nil {
 		if v, ok := r.icons[strings.ToLower(app.name)]; ok {
 			return r.glyphOr(v, v)
 		}
 	}
 	// Status icon names first: "audio-volume-muted" is a state, not a brand.
-	for _, w := range words(iconName) {
-		for _, s := range statusIcons {
-			if w == s[0] {
-				if g, ok := r.glyph(s[1]); ok {
-					return g
-				}
-			}
+	if s := statusIcon(iconName); s != "" {
+		if g, ok := r.glyph(s); ok {
+			return g
 		}
 	}
-	var names []string
-	names = append(names, keys[:]...)
+	names := []string{id, iconName}
 	if app != nil {
 		names = append(names, app.words...)
 		names = append(names, app.name)
@@ -119,6 +134,9 @@ func (r *Resolver) Resolve(id, iconName, title string) string {
 		if g, ok := r.brand(n); ok {
 			return g
 		}
+	}
+	if g, ok := r.prefixed(underscored(title)); ok {
+		return g
 	}
 	if app != nil {
 		for _, c := range categories {
@@ -162,16 +180,20 @@ func (r *Resolver) glyphOr(name, fallback string) string {
 	return fallback
 }
 
-// brand finds a glyph named after s: its whole name, then each word.
-func (r *Resolver) brand(s string) (string, bool) {
-	s = strings.ToLower(s)
-	whole := strings.Map(func(c rune) rune {
+// underscored lowercases s and joins its parts with '_', the way glyph names
+// are spelled: "Google Chrome" gives "google_chrome".
+func underscored(s string) string {
+	return strings.Map(func(c rune) rune {
 		if c == '-' || c == '.' || c == ' ' {
 			return '_'
 		}
-		return c
+		return unicode.ToLower(c)
 	}, s)
-	if !stopwords[whole] {
+}
+
+// brand finds a glyph named after s: its whole name, then each word.
+func (r *Resolver) brand(s string) (string, bool) {
+	if whole := underscored(s); !stopwords[whole] {
 		if g, ok := r.prefixed(whole); ok {
 			return g, true
 		}
@@ -219,17 +241,37 @@ func firstLetter(s string) rune {
 	return 0
 }
 
-// app finds the .desktop file of an item from its keys and their words.
-func (r *Resolver) app(keys []string) *desktopApp {
+// app finds the .desktop file of an item. The index is read on the first
+// call, and again on a miss when an applications directory changed since,
+// as when an application is installed during the session.
+func (r *Resolver) app(id, iconName, title string) *desktopApp {
 	if r.apps == nil {
-		r.apps = loadApps(r.dataDirs)
+		r.reload()
 	}
-	for _, k := range keys {
+	if a := r.findApp(id, iconName, title); a != nil {
+		return a
+	}
+	if r.changed() {
+		r.reload()
+		return r.findApp(id, iconName, title)
+	}
+	return nil
+}
+
+func (r *Resolver) reload() {
+	r.loaded = time.Now()
+	r.apps = loadApps(r.dataDirs)
+}
+
+// findApp looks up the whole id, icon name and title, then the words of the
+// id and icon name. Titles are free text: their words are not used.
+func (r *Resolver) findApp(id, iconName, title string) *desktopApp {
+	for _, k := range [...]string{id, iconName, title} {
 		if a := r.apps[strings.ToLower(k)]; a != nil && k != "" {
 			return a
 		}
 	}
-	for _, k := range keys {
+	for _, k := range [...]string{id, iconName} {
 		for _, w := range words(k) {
 			if a := r.apps[w]; a != nil {
 				return a
@@ -237,6 +279,20 @@ func (r *Resolver) app(keys []string) *desktopApp {
 		}
 	}
 	return nil
+}
+
+// changed reports whether an applications directory was modified after the
+// index was read.
+func (r *Resolver) changed() bool {
+	for _, d := range r.dataDirs {
+		if d == "" {
+			continue
+		}
+		if st, err := os.Stat(filepath.Join(d, "applications")); err == nil && !st.ModTime().Before(r.loaded) {
+			return true
+		}
+	}
+	return false
 }
 
 func xdgDataDirs() []string {
@@ -254,8 +310,10 @@ func xdgDataDirs() []string {
 }
 
 // loadApps indexes the .desktop files of dataDirs by lowercased file name,
-// Icon and StartupWMClass, and by the words of those. Whole values win over
-// words, and earlier directories over later ones, as in the XDG spec.
+// Icon and StartupWMClass, and by the last part of reverse-DNS ones
+// ("org.gnome.Settings" gives "settings" too). Whole values win over last
+// parts, and earlier directories over later ones, as in the XDG spec. A
+// hidden application keeps its keys, with no application behind them.
 func loadApps(dataDirs []string) map[string]*desktopApp {
 	apps := map[string]*desktopApp{}
 	var all []*desktopApp
@@ -271,7 +329,10 @@ func loadApps(dataDirs []string) map[string]*desktopApp {
 		}
 	}
 	add := func(k string, a *desktopApp) {
-		if _, taken := apps[k]; !taken {
+		if _, taken := apps[k]; !taken && k != "" {
+			if a.hidden {
+				a = nil
+			}
 			apps[k] = a
 		}
 	}
@@ -282,8 +343,8 @@ func loadApps(dataDirs []string) map[string]*desktopApp {
 	}
 	for _, a := range all {
 		for _, v := range a.words {
-			for _, w := range words(v) {
-				add(w, a)
+			if i := strings.LastIndexByte(v, '.'); i >= 0 {
+				add(v[i+1:], a)
 			}
 		}
 	}
@@ -327,6 +388,12 @@ func readDesktop(path string) *desktopApp {
 			}
 		case "Categories":
 			a.categories = strings.FieldsFunc(v, func(c rune) bool { return c == ';' })
+		case "Hidden":
+			a.hidden = strings.TrimSpace(v) == "true"
+		case "Type":
+			if strings.TrimSpace(v) != "Application" {
+				return nil
+			}
 		}
 	}
 	if !in {

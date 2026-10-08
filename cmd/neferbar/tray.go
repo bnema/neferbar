@@ -28,7 +28,7 @@ Run it as a module:
   [[module]]
   name = "tray"
   zone = "right"
-  exec = "neferbar tray"
+  exec = '"$NEFERBAR_BIN" tray'
 
 flags:
 `
@@ -74,7 +74,7 @@ func runTray(ctx context.Context, args []string) error {
 		Out:      os.Stdout,
 		Log:      log,
 	}
-	opt.Foreground, opt.Background, opt.Accent = trayColors()
+	opt.Foreground, opt.Background, opt.Accent = trayColors(log)
 
 	c, err := zerobus.SessionBus()
 	if err != nil {
@@ -89,16 +89,22 @@ func runTray(ctx context.Context, args []string) error {
 
 // trayColors are the colors the bar gives its scripts, so the tray matches
 // the bar. Run outside the bar, in a terminal, it uses the default theme.
-func trayColors() (fg, bg, accent tray.RGB) {
+func trayColors(log *slog.Logger) (fg, bg, accent tray.RGB) {
 	def := theme.Default()
-	return envColor("NEFERBAR_FOREGROUND", def.Foreground),
-		envColor("NEFERBAR_BACKGROUND", def.Background),
-		envColor("NEFERBAR_ACCENT", def.Palette[4])
+	return envColor(log, "NEFERBAR_FOREGROUND", def.Foreground),
+		envColor(log, "NEFERBAR_BACKGROUND", def.Background),
+		envColor(log, "NEFERBAR_ACCENT", def.Palette[4])
 }
 
-func envColor(name string, def tray.RGB) tray.RGB {
-	if c, err := config.ParseColor(os.Getenv(name)); err == nil {
-		return c
+func envColor(log *slog.Logger, name string, def tray.RGB) tray.RGB {
+	v, ok := os.LookupEnv(name)
+	if !ok {
+		return def
 	}
-	return def
+	c, err := config.ParseColor(v)
+	if err != nil {
+		log.Warn("tray: using the default color", "var", name, "err", err)
+		return def
+	}
+	return c
 }

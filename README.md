@@ -272,19 +272,21 @@ exec = '"$NEFERBAR_BIN" tray'
 
 Each icon is chosen without a list to maintain, from what the system already knows:
 
-1. a glyph of your font named after the application, such as `fa-steam` or `linux-gimp`;
-2. a glyph for common status icons, such as a muted speaker;
-3. a glyph for the category of the application's `.desktop` file: a gamepad for a game, a globe for a browser;
-4. the first letter of its name, in a circle.
+1. your choice in `[tray.icons]` (see below);
+2. a glyph for standard status icons, such as a muted speaker or a Wi-Fi signal;
+3. a glyph of your font named after the application, such as `fa-steam` or `linux-gimp`;
+4. a glyph for the category of the application's `.desktop` file: a gamepad for a game, a globe for a browser;
+5. the first letter of its name, in a circle.
 
-The icon takes the main color of the application's own icon, lightened if it would not show on the bar. Hidden items are left out, and an item that asks for attention turns bold, in the accent color. Icons only show: clicks and menus are not supported.
+The icon takes the main color of the application's own icon, moved toward the bar's text color if it would not show on the bar. Hidden items are left out, and an item that asks for attention turns bold, in the accent color. Icons only show: clicks and menus are not supported.
 
-Pick another icon with `[tray.icons]`. The key is the item's id or application name, in any case; the value is a glyph name or the text to show:
+Pick another icon with `[tray.icons]`. The key is the item's id or application name, in any case; the value is a glyph name, the text to show, or `""` to hide the item:
 
 ```toml
 [tray.icons]
 sunshine = "md-weather_sunny"
 handy = "H"
+nm-applet = ""
 ```
 
 The tray works next to another panel: when one already runs the tray service, `neferbar tray` reads the same items from it.

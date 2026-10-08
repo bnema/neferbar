@@ -70,7 +70,8 @@ func newFakeItem(t *testing.T, addr, id, iconName string, pixel [4]byte) *fakeIt
 	return f
 }
 
-// run makes the item's goroutine run fn, and waits for it.
+// run hands fn to the item's goroutine, which runs it right after answering:
+// run may return before fn ran. Tests wait for its effect on the output.
 func (f *fakeItem) run(t *testing.T, fn func()) {
 	t.Helper()
 	f.cmds <- fn
@@ -258,60 +259,212 @@ func TestTrayAsWatcher(t *testing.T) {
 	}
 }
 
-func TestTrayAsHost(t *testing.T) {
-	addr := privateBus(t)
-	// Another program is the watcher. It lists one item and announces it.
-	other := dial(t, addr)
-	if code, err := other.RequestName(watcherName, zerobus.NameFlagDoNotQueue); err != nil || code != zerobus.NamePrimaryOwner {
+// waitWatcher waits until the tray owns the watcher name.
+func waitWatcher(t *testing.T, addr string) {
+	t.Helper()
+	probe := dial(t, addr)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		probe.NewCall(busName, busPath, busName, "NameHasOwner", "s").Str(watcherName)
+		m, err := probe.Call()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m.Body().Bool() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the tray did not become the watcher")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// fakeWatcher is another panel's StatusNotifierWatcher. Like fakeItem, its
+// connection is used only by its own goroutine, which the test drives
+// through Ping.
+type fakeWatcher struct {
+	c      *zerobus.Conn
+	probe  *zerobus.Conn
+	items  []string
+	cmds   chan func()
+	closed chan struct{}
+}
+
+func newFakeWatcher(t *testing.T, addr string, flags uint32, items ...string) *fakeWatcher {
+	t.Helper()
+	w := &fakeWatcher{c: dial(t, addr), probe: dial(t, addr), items: items, cmds: make(chan func(), 1), closed: make(chan struct{})}
+	if code, err := w.c.RequestName(watcherName, flags|zerobus.NameFlagDoNotQueue); err != nil || code != zerobus.NamePrimaryOwner {
 		t.Fatalf("RequestName = %d, %v", code, err)
 	}
-	obsidian := newFakeItem(t, addr, "obsidian_status_icon_1", "", [4]byte{255, 120, 80, 220})
-	// A Conn is used from one goroutine: the fake watcher announces new
-	// items from its own loop, when the test pings it.
-	announce := make(chan string, 1)
-	go func() {
-		for {
-			m, err := other.ReadMessage()
-			if err != nil {
-				return
-			}
-			if m.Type != zerobus.TypeMethodCall {
-				continue
-			}
-			switch m.Member {
-			case "Ping":
-				other.NewReply(m, "")
-				if _, err := other.Send(); err != nil {
-					return
-				}
-				other.NewSignal(watcherPath, watcherIface, "StatusNotifierItemRegistered", "s").Str(<-announce)
-			case "Get":
-				e := other.NewReply(m, "v")
-				e.Variant("as")
-				a := e.BeginArray('s')
-				e.Str(obsidian.name + itemPath)
-				e.EndArray(a)
-			default:
-				other.NewReply(m, "")
-			}
-			if _, err := other.Send(); err != nil {
-				return
-			}
+	go w.serve()
+	return w
+}
+
+func (w *fakeWatcher) serve() {
+	defer close(w.closed)
+	for {
+		m, err := w.c.ReadMessage()
+		if err != nil {
+			return
 		}
-	}()
+		if m.Type != zerobus.TypeMethodCall {
+			continue
+		}
+		switch m.Member {
+		case "Ping":
+			w.c.NewReply(m, "")
+			if _, err := w.c.Send(); err != nil {
+				return
+			}
+			(<-w.cmds)()
+			continue
+		case "Get":
+			e := w.c.NewReply(m, "v")
+			e.Variant("as")
+			a := e.BeginArray('s')
+			for _, s := range w.items {
+				e.Str(s)
+			}
+			e.EndArray(a)
+		default:
+			w.c.NewReply(m, "")
+		}
+		if _, err := w.c.Send(); err != nil {
+			return
+		}
+	}
+}
+
+// do hands fn to the watcher's goroutine; see fakeItem.run.
+func (w *fakeWatcher) do(t *testing.T, fn func()) {
+	t.Helper()
+	w.cmds <- fn
+	w.probe.NewCall(w.c.UniqueName(), "/", "org.freedesktop.DBus.Peer", "Ping", "")
+	if _, err := w.probe.Call(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (w *fakeWatcher) emit(t *testing.T, member, service string) {
+	w.do(t, func() {
+		w.c.NewSignal(watcherPath, watcherIface, member, "s").Str(service)
+		_, _ = w.c.Send()
+	})
+}
+
+func (w *fakeWatcher) quit(t *testing.T) {
+	w.do(t, func() { _ = w.c.Close() })
+	<-w.closed
+}
+
+func TestTrayAsHost(t *testing.T) {
+	addr := privateBus(t)
+	obsidian := newFakeItem(t, addr, "obsidian_status_icon_1", "", [4]byte{255, 120, 80, 220})
+	// Another program is the watcher, and lists one item.
+	w := newFakeWatcher(t, addr, 0, obsidian.name+itemPath)
 
 	out, _, _ := startTray(t, addr)
 	out.waitFor(t, "the listed item", func(s string) bool { return strings.Contains(s, "O") })
 
-	// A second item is announced by the other watcher.
+	// A second item is announced by the other watcher, by bus name only.
 	steam := newFakeItem(t, addr, "steam", "", [4]byte{255, 30, 60, 200})
-	announce <- steam.name
-	probe := dial(t, addr)
-	probe.NewCall(other.UniqueName(), "/", "org.freedesktop.DBus.Peer", "Ping", "")
-	if _, err := probe.Call(); err != nil {
+	w.emit(t, "StatusNotifierItemRegistered", steam.name)
+	out.waitFor(t, "both items", func(s string) bool { return strings.Contains(s, "O") && strings.Contains(s, "S") })
+
+	// And removed in the same form.
+	w.emit(t, "StatusNotifierItemUnregistered", steam.name)
+	out.waitFor(t, "steam to go away", func(s string) bool { return strings.Contains(s, "O") && !strings.Contains(s, "S") })
+}
+
+func TestHostFollowsReplacedWatcher(t *testing.T) {
+	addr := privateBus(t)
+	obsidian := newFakeItem(t, addr, "obsidian_status_icon_1", "", [4]byte{255, 120, 80, 220})
+	newFakeWatcher(t, addr, zerobus.NameFlagAllowReplacement, obsidian.name+itemPath)
+	out, _, _ := startTray(t, addr)
+	out.waitFor(t, "the first watcher's item", func(s string) bool { return strings.Contains(s, "O") })
+
+	// A new panel replaces the watcher: its items are the ones to show.
+	steam := newFakeItem(t, addr, "steam", "", [4]byte{255, 30, 60, 200})
+	newFakeWatcher(t, addr, zerobus.NameFlagReplaceExisting, steam.name+itemPath)
+	out.waitFor(t, "the new watcher's item only", func(s string) bool { return strings.Contains(s, "S") && !strings.Contains(s, "O") })
+}
+
+func TestHostTakesOverWatcher(t *testing.T) {
+	addr := privateBus(t)
+	obsidian := newFakeItem(t, addr, "obsidian_status_icon_1", "", [4]byte{255, 120, 80, 220})
+	w := newFakeWatcher(t, addr, 0, obsidian.name+itemPath)
+	out, cancel, done := startTray(t, addr)
+	out.waitFor(t, "the listed item", func(s string) bool { return strings.Contains(s, "O") })
+
+	// The other panel exits: the tray drops its items and becomes the
+	// watcher, where items register again.
+	w.quit(t)
+	out.waitFor(t, "the items to go", func(s string) bool { return s == "" })
+	waitWatcher(t, addr)
+	obsidian.register(t)
+	out.waitFor(t, "the item registered again", func(s string) bool { return strings.Contains(s, "O") })
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
+// registered returns the watcher's RegisteredStatusNotifierItems.
+func registered(t *testing.T, c *zerobus.Conn) []string {
+	t.Helper()
+	e := c.NewCall(watcherName, watcherPath, propsIface, "Get", "ss")
+	e.Str(watcherIface)
+	e.Str("RegisteredStatusNotifierItems")
+	m, err := c.Call()
+	if err != nil {
 		t.Fatal(err)
 	}
-	out.waitFor(t, "both items", func(s string) bool { return strings.Contains(s, "O") && strings.Contains(s, "S") })
+	r := m.Body()
+	if v := r.Variant(); v != "as" {
+		t.Fatalf("variant %q", v)
+	}
+	var items []string
+	for end := r.Array('s'); r.More(end); {
+		items = append(items, strings.Clone(r.Str()))
+	}
+	return items
+}
+
+func TestWatcherRegistration(t *testing.T) {
+	addr := privateBus(t)
+	out, _, _ := startTray(t, addr)
+	waitWatcher(t, addr)
+
+	// libappindicator and Electron register an object path, not a name.
+	steam := newFakeItem(t, addr, "steam", "", [4]byte{255, 30, 60, 200})
+	steam.run(t, func() {
+		steam.c.NewCall(watcherName, watcherPath, watcherIface, "RegisterStatusNotifierItem", "s").Str(itemPath)
+		_, _ = steam.c.Send()
+	})
+	out.waitFor(t, "the item registered by path", func(s string) bool { return strings.Contains(s, "S") })
+
+	// The same item again, by bus name: still one item.
+	dup := make(chan error, 1)
+	steam.run(t, func() {
+		steam.c.NewCall(watcherName, watcherPath, watcherIface, "RegisterStatusNotifierItem", "s").Str(steam.name)
+		_, err := steam.c.Call()
+		dup <- err
+	})
+	if err := <-dup; err != nil {
+		t.Fatal(err)
+	}
+
+	// A path D-Bus refuses is rejected and leaves no trace.
+	probe := dial(t, addr)
+	probe.NewCall(watcherName, watcherPath, watcherIface, "RegisterStatusNotifierItem", "s").Str("/bad//path")
+	if _, err := probe.Call(); err == nil {
+		t.Fatal("an invalid path was accepted")
+	}
+	if items := registered(t, probe); len(items) != 1 || items[0] != steam.name+itemPath {
+		t.Fatalf("registered items %q", items)
+	}
 }
 
 // TestRefreshNoAllocs checks the steady state: an item signals a change, the
@@ -324,7 +477,7 @@ func TestRefreshNoAllocs(t *testing.T) {
 	tr := &Tray{c: dial(t, addr), opt: Options{Resolver: NewResolver(lookup, nil, []string{t.TempDir()}), Out: &out},
 		frame: make([]byte, 0, 256), last: make([]byte, 0, 256)}
 	tr.opt.Log = slog.New(slog.DiscardHandler)
-	tr.add(app.name, "", "")
+	tr.add(app.name, "")
 	cycle := func() {
 		tr.refresh(tr.items[0])
 		for len(tr.pending) > 0 {
