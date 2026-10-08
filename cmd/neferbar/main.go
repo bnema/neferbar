@@ -48,12 +48,17 @@ func main() {
 		}
 		return
 	}
-	if len(os.Args) > 1 && os.Args[1] == "app" {
+	if len(os.Args) > 1 && (os.Args[1] == "app" || os.Args[1] == "tray") {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		err := runApp(ctx, os.Args[2:], os.Getenv("NEFERBAR_DISPLAY"))
+		var err error
+		if os.Args[1] == "app" {
+			err = runApp(ctx, os.Args[2:], os.Getenv("NEFERBAR_DISPLAY"))
+		} else {
+			err = runTray(ctx, os.Args[2:])
+		}
 		stop()
 		if err != nil && !errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintf(os.Stderr, "neferbar app: %v\n", err)
+			fmt.Fprintf(os.Stderr, "neferbar %s: %v\n", os.Args[1], err)
 			os.Exit(1)
 		}
 		return

@@ -37,9 +37,18 @@ type Module struct {
 	Exec string `toml:"exec"`
 }
 
+// Tray configures "neferbar tray".
+type Tray struct {
+	// Icons replaces the icon chosen for an item. The key is the item id or
+	// application name, in any case; the value is a Nerd Font glyph name such
+	// as "fa-steam", or the text to show.
+	Icons map[string]string `toml:"icons"`
+}
+
 // Config is the whole file.
 type Config struct {
 	Bar    Bar      `toml:"bar"`
+	Tray   Tray     `toml:"tray"`
 	Module []Module `toml:"module"`
 }
 
