@@ -1,0 +1,41 @@
+# Built by `make pkg` at the repo root, from `git archive HEAD`.
+pkgname=neferbar
+pkgver=0.0.0
+pkgrel=1
+pkgdesc='One-cell-high, terminal-style status bar for Wayland, driven by scripts'
+arch=('x86_64' 'aarch64')
+url='https://github.com/bnema/neferbar'
+license=('MIT')
+# Loaded at runtime (purego, no cgo): not seen by makepkg's library scan.
+# fontconfig provides fc-match, which finds the font files.
+depends=('glibc' 'fontconfig' 'libxkbcommon' 'vulkan-icd-loader' 'vulkan-driver')
+makedepends=('go>=2:1.27')
+optdepends=('ttf-jetbrains-mono-nerd: default font, with the icons modules print')
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+	cd "$pkgname-$pkgver"
+	export GOPATH="$srcdir/gopath" GOFLAGS='-mod=readonly -modcacherw' GOWORK=off GOTOOLCHAIN=local
+	go mod download
+	go mod vendor
+}
+
+build() {
+	cd "$pkgname-$pkgver"
+	export CGO_ENABLED=0 GOFLAGS='-mod=vendor -trimpath -buildvcs=false -buildmode=pie' GOPROXY=off GOWORK=off GOTOOLCHAIN=local
+	go build -ldflags "-X main.version=$pkgver" -o neferbar ./cmd/neferbar
+}
+
+check() {
+	cd "$pkgname-$pkgver"
+	./neferbar version
+}
+
+package() {
+	cd "$pkgname-$pkgver"
+	install -Dm755 neferbar "$pkgdir/usr/bin/neferbar"
+	install -Dm644 README.md "$pkgdir/usr/share/doc/neferbar/README.md"
+	cp -r examples "$pkgdir/usr/share/doc/neferbar/examples"
+	install -Dm644 LICENSE "$pkgdir/usr/share/licenses/neferbar/LICENSE"
+}

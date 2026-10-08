@@ -1,0 +1,137 @@
+# Builds the GitHub release for a pushed v* tag (.github/workflows/release.yml)
+# and generates the neferbar-bin PKGBUILD. The workflow verifies that PKGBUILD
+# with makepkg before it pushes it to the AUR, so GoReleaser never uploads it.
+version: 2
+
+project_name: neferbar
+
+before:
+  hooks:
+    - go mod verify
+
+builds:
+  - id: neferbar
+    main: ./cmd/neferbar
+    binary: neferbar
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+      - -buildmode=pie
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    # Same inputs give the same binary.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: neferbar
+    ids: [neferbar]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    # Everything the PKGBUILD package() installs, at the paths of the repo.
+    files:
+      - LICENSE
+      - README.md
+      - examples/**/*
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+git:
+  tag_sort: -version:refname
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^style(\\([^)]+\\))?:"
+      - "^test(\\([^)]+\\))?:"
+  groups:
+    - title: Added
+      regexp: "^feat(\\([^)]+\\))?!?:"
+      order: 0
+    - title: Fixed
+      regexp: "^fix(\\([^)]+\\))?!?:"
+      order: 1
+    - title: Performance
+      regexp: "^perf(\\([^)]+\\))?!?:"
+      order: 2
+    - title: Changed
+      regexp: "^(refactor|build)(\\([^)]+\\))?!?:"
+      order: 3
+    - title: Documentation
+      regexp: "^docs(\\([^)]+\\))?!?:"
+      order: 4
+    - title: Maintenance
+      regexp: "^(chore|ci)(\\([^)]+\\))?!?:"
+      order: 5
+    - title: Other changes
+      order: 999
+
+release:
+  github:
+    owner: bnema
+    name: neferbar
+  draft: false
+  prerelease: auto
+  mode: replace
+  header: |
+    ## neferbar {{ .Tag }}
+
+    ### Install on Arch Linux
+
+    ```sh
+    paru -S neferbar-bin   # this release, pre-built (x86_64, aarch64)
+    paru -S neferbar-git   # latest main, built from source
+    ```
+
+    ### Install the pre-built archive
+
+    Linux amd64 and arm64. Replace `amd64` with `arm64` on ARM.
+
+    ```sh
+    gh release download {{ .Tag }} -R bnema/neferbar -p 'neferbar_{{ .Version }}_linux_amd64.tar.gz' -p checksums.txt
+    sha256sum -c --ignore-missing checksums.txt
+    gh attestation verify neferbar_{{ .Version }}_linux_amd64.tar.gz -R bnema/neferbar
+    ```
+
+    The archive holds the `neferbar` binary, the example configs and scripts, the README and the license. See the [README](https://github.com/bnema/neferbar#readme) for runtime dependencies.
+  footer: |
+    ---
+
+    **Full changelog**: https://github.com/bnema/neferbar/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+aurs:
+  - name: neferbar-bin
+    ids: [neferbar]
+    homepage: https://github.com/bnema/neferbar
+    description: One-cell-high, terminal-style status bar for Wayland, driven by scripts
+    maintainers:
+      - "bnema <b at bnema dot dev>"
+    license: MIT
+    # The release workflow verifies and publishes the generated PKGBUILD.
+    skip_upload: true
+    provides: [neferbar]
+    conflicts: [neferbar, neferbar-git]
+    # Loaded at runtime (purego, no cgo): not seen by makepkg's library scan.
+    # fontconfig provides fc-match, which finds the font files.
+    depends:
+      - glibc
+      - fontconfig
+      - libxkbcommon
+      - vulkan-icd-loader
+      - vulkan-driver
+    optdepends:
+      - "ttf-jetbrains-mono-nerd: default font, with the icons modules print"
+    package: |-
+      install -Dm755 ./neferbar "${pkgdir}/usr/bin/neferbar"
+      install -Dm644 ./README.md "${pkgdir}/usr/share/doc/neferbar/README.md"
+      cp -r ./examples "${pkgdir}/usr/share/doc/neferbar/examples"
+      install -Dm644 ./LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
