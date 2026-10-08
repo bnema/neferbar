@@ -140,7 +140,7 @@ func (c *Config) Validate() error {
 	for k, v := range c.Tray.Icons {
 		// The tray prints the value on its one output line.
 		if strings.ContainsFunc(v, unicode.IsControl) {
-			return fmt.Errorf("config: tray.icons.%s contains a control character", k)
+			return fmt.Errorf("config: tray.icons.%q contains a control character", k)
 		}
 	}
 	return nil

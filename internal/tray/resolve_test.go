@@ -93,13 +93,29 @@ func TestResolveFindsAppsInstalledLater(t *testing.T) {
 		t.Fatalf("before install: %q", got)
 	}
 	writeDesktop(t, dir, "racer", "[Desktop Entry]\nName=Racer\nCategories=Game;\n")
-	// The directory's mtime must move past the load time.
-	future := time.Now().Add(time.Second)
-	if err := os.Chtimes(filepath.Join(dir, "applications"), future, future); err != nil {
+	// Make sure the directory's mtime differs from the one at the load,
+	// even on a coarse clock.
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "applications"), later, later); err != nil {
 		t.Fatal(err)
 	}
 	if got := r.Resolve("racer", "", ""); got != "G" {
 		t.Fatalf("after install: %q, want G", got)
+	}
+}
+
+func TestResolveDoesNotRescanUnchangedDirs(t *testing.T) {
+	// A directory dated in the future does not make every miss rescan.
+	dir := t.TempDir()
+	writeDesktop(t, dir, "racer", "[Desktop Entry]\nName=Racer\nCategories=Game;\n")
+	future := time.Now().Add(24 * time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "applications"), future, future); err != nil {
+		t.Fatal(err)
+	}
+	r := NewResolver(lookup, nil, []string{dir})
+	r.Resolve("unknown", "", "")
+	if r.changed() {
+		t.Fatal("an unchanged directory counts as changed")
 	}
 }
 

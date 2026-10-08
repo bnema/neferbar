@@ -29,8 +29,13 @@ func (h *histogram) dominant(argb []byte) (RGB, bool) {
 	}
 	clear(h.weight[:])
 	clear(h.sum[:])
-	step := 4 * ((len(argb)/4 + maxSamples - 1) / maxSamples)
-	for i := 0; i+3 < len(argb); i += step {
+	// An odd pixel step crosses every column of a power-of-two wide icon,
+	// so samples do not line up in a few columns.
+	step := (len(argb)/4 + maxSamples - 1) / maxSamples
+	if step > 1 {
+		step |= 1
+	}
+	for i := 0; i+3 < len(argb); i += 4 * step {
 		a, r, g, b := uint32(argb[i]), uint32(argb[i+1]), uint32(argb[i+2]), uint32(argb[i+3])
 		if a < 128 {
 			continue

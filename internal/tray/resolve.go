@@ -22,7 +22,7 @@ type Resolver struct {
 	icons    map[string]string // lowercased keys
 	dataDirs []string
 	apps     map[string]*desktopApp // nil until the first lookup
-	loaded   time.Time              // when apps was read
+	mtimes   []time.Time            // of each applications dir when apps was read
 }
 
 // desktopApp is what the resolver uses from a .desktop file.
@@ -259,8 +259,21 @@ func (r *Resolver) app(id, iconName, title string) *desktopApp {
 }
 
 func (r *Resolver) reload() {
-	r.loaded = time.Now()
+	r.mtimes = r.dirTimes(r.mtimes[:0])
 	r.apps = loadApps(r.dataDirs)
+}
+
+// dirTimes appends the mtime of each applications directory, zero when it
+// is missing.
+func (r *Resolver) dirTimes(ts []time.Time) []time.Time {
+	for _, d := range r.dataDirs {
+		var t time.Time
+		if st, err := os.Stat(filepath.Join(d, "applications")); d != "" && err == nil {
+			t = st.ModTime()
+		}
+		ts = append(ts, t)
+	}
+	return ts
 }
 
 // findApp looks up the whole id, icon name and title, then the words of the
@@ -281,14 +294,13 @@ func (r *Resolver) findApp(id, iconName, title string) *desktopApp {
 	return nil
 }
 
-// changed reports whether an applications directory was modified after the
-// index was read.
+// changed reports whether an applications directory changed since the
+// index was read. Comparing mtimes with themselves, not with the clock,
+// is safe from clock skew.
 func (r *Resolver) changed() bool {
-	for _, d := range r.dataDirs {
-		if d == "" {
-			continue
-		}
-		if st, err := os.Stat(filepath.Join(d, "applications")); err == nil && !st.ModTime().Before(r.loaded) {
+	var buf [8]time.Time
+	for i, t := range r.dirTimes(buf[:0]) {
+		if !t.Equal(r.mtimes[i]) {
 			return true
 		}
 	}

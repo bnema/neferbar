@@ -284,7 +284,8 @@ func (t *Tray) signal(m *zerobus.Message) {
 			t.vanished(name)
 		case name == watcherName && old != "" && !t.watcher && owner != t.c.UniqueName():
 			// Another watcher replaced the one we used: its items are
-			// the ones to show now.
+			// the ones to show now, not a late list from the old one.
+			t.pending = slices.DeleteFunc(t.pending, func(p pend) bool { return p.kind == pendItems })
 			t.dropAll()
 			t.becomeHost()
 		}
@@ -354,6 +355,32 @@ func normService(s string) (service, bus, path string) {
 		return bus + itemPath, bus, itemPath
 	}
 	return s, bus, "/" + p
+}
+
+// validBusName reports whether s is a unique (":1.42") or well-known
+// ("org.example.App") bus name, as D-Bus defines them.
+func validBusName(s string) bool {
+	if s == "" || len(s) > 255 {
+		return false
+	}
+	unique := s[0] == ':'
+	if unique {
+		s = s[1:]
+	}
+	n := 0
+	for more := true; more; n++ {
+		var e string
+		e, s, more = strings.Cut(s, ".")
+		if e == "" || !unique && e[0] >= '0' && e[0] <= '9' {
+			return false
+		}
+		for _, c := range []byte(e) {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+				return false
+			}
+		}
+	}
+	return n >= 2
 }
 
 // addResult says what add did.
@@ -533,8 +560,11 @@ func (t *Tray) call(m *zerobus.Message) {
 		}
 		if strings.HasPrefix(s, "/") {
 			s = m.Sender + s // registered by object path
-		} else {
+		} else if validBusName(s) {
 			s += itemPath
+		} else {
+			t.errorReply(m, noReply, "org.freedesktop.DBus.Error.InvalidArgs", "invalid service")
+			return
 		}
 		// add copies s before the next read, and sends only a GetAll.
 		switch t.add(s, m.Sender) {

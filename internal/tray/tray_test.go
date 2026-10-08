@@ -458,9 +458,11 @@ func TestWatcherRegistration(t *testing.T) {
 
 	// A path D-Bus refuses is rejected and leaves no trace.
 	probe := dial(t, addr)
-	probe.NewCall(watcherName, watcherPath, watcherIface, "RegisterStatusNotifierItem", "s").Str("/bad//path")
-	if _, err := probe.Call(); err == nil {
-		t.Fatal("an invalid path was accepted")
+	for _, bad := range []string{"/bad//path", "not a name", "1.starts.with.digit"} {
+		probe.NewCall(watcherName, watcherPath, watcherIface, "RegisterStatusNotifierItem", "s").Str(bad)
+		if _, err := probe.Call(); err == nil {
+			t.Fatalf("%q was accepted", bad)
+		}
 	}
 	if items := registered(t, probe); len(items) != 1 || items[0] != steam.name+itemPath {
 		t.Fatalf("registered items %q", items)

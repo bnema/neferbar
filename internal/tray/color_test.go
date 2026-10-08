@@ -45,6 +45,26 @@ func TestDominantLargeIcon(t *testing.T) {
 	}
 }
 
+func TestDominantLargeIconOffColumns(t *testing.T) {
+	// 512x512, transparent but for a red logo in columns 10..49: a stride of
+	// 64 pixels would sample only columns 0, 64, 128... and miss it.
+	const side = 512
+	icon := make([]byte, 0, side*side*4)
+	for range side {
+		for x := range side {
+			if x >= 10 && x < 50 {
+				icon = append(icon, 255, 250, 20, 20)
+			} else {
+				icon = append(icon, 0, 0, 0, 0)
+			}
+		}
+	}
+	var h histogram
+	if got, ok := h.dominant(icon); !ok || got != (RGB{250, 20, 20}) {
+		t.Fatalf("dominant = %v, %v", got, ok)
+	}
+}
+
 func TestReadable(t *testing.T) {
 	bg, fg := RGB{0x1e, 0x1e, 0x2e}, RGB{0xcd, 0xd6, 0xf4}
 	dark := RGB{0x17, 0x1a, 0x21} // Steam's near-black blue
