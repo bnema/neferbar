@@ -231,7 +231,7 @@ neferbar [-config file] [-display socket] [-pprof addr] [-memstats interval]
 |---|---|
 | `-config` | Config file. Default: `$XDG_CONFIG_HOME/neferbar/config.toml`. |
 | `-display` | Wayland socket name or path. Default: `$NEFERBAR_DISPLAY`, then `$WAYLAND_DISPLAY`. |
-| `-pprof` | Serve Go profiling on a loopback address, such as `localhost:6060`. |
+| `-pprof` | Serve Go profiling on a loopback address, such as `localhost:6060`. Default: `$NEFERBAR_PPROF`, so a bar started by the compositor can be profiled. |
 | `-memstats` | Log allocation counters at this interval. |
 
 ## Reading the focused window

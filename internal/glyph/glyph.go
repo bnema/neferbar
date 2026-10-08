@@ -13,6 +13,7 @@ import (
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
+	"golang.org/x/sys/unix"
 )
 
 // Style is a set of text attributes. Bold and Italic pick a font file;
@@ -37,6 +38,9 @@ type Paths [4]string
 // clipped to a CellW x CellH box. It is used from one goroutine.
 type Face struct {
 	faces [4]font.Face
+	// maps are the font files, mapped read-only: they stay in the shared page
+	// cache instead of the Go heap, and only the pages read count as memory.
+	maps [][]byte
 	// CellW and CellH are the cell size in physical pixels.
 	CellW, CellH int
 	ascent       fixed.Int26_6
@@ -74,16 +78,35 @@ func FamilyOf(request string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func loadFace(path string, px float64) (font.Face, error) {
-	data, err := os.ReadFile(path)
+// mapFile maps a whole file read-only.
+func mapFile(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	st, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if st.Size() <= 0 || st.Size() != int64(int(st.Size())) {
+		return nil, fmt.Errorf("%s: unusable size %d", path, st.Size())
+	}
+	return unix.Mmap(int(file.Fd()), 0, int(st.Size()), unix.PROT_READ, unix.MAP_SHARED)
+}
+
+// loadFace opens the file at path and appends its mapping to f.maps.
+func (f *Face) loadFace(path string, px float64) (font.Face, error) {
+	data, err := mapFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("glyph: %w", err)
 	}
-	f, err := opentype.Parse(data)
+	f.maps = append(f.maps, data)
+	fnt, err := opentype.Parse(data)
 	if err != nil {
 		return nil, fmt.Errorf("glyph: parse %s: %w", path, err)
 	}
-	return opentype.NewFace(f, &opentype.FaceOptions{Size: px, DPI: 72, Hinting: font.HintingFull})
+	return opentype.NewFace(fnt, &opentype.FaceOptions{Size: px, DPI: 72, Hinting: font.HintingFull})
 }
 
 // Load opens the font files at px pixels. The cell size comes from the regular
@@ -105,7 +128,7 @@ func Load(paths Paths, px float64) (*Face, error) {
 			f.faces[i] = face
 			continue
 		}
-		face, err := loadFace(path, px)
+		face, err := f.loadFace(path, px)
 		if err != nil {
 			f.Close()
 			return nil, err
@@ -144,7 +167,8 @@ func Load(paths Paths, px float64) (*Face, error) {
 	return f, nil
 }
 
-// Close releases the font faces.
+// Close releases the font faces and unmaps their files. The face must not be
+// used afterwards.
 func (f *Face) Close() {
 	if f == nil {
 		return
@@ -157,6 +181,10 @@ func (f *Face) Close() {
 		}
 		f.faces[i] = nil
 	}
+	for _, m := range f.maps {
+		_ = unix.Munmap(m)
+	}
+	f.maps = nil
 }
 
 // Rasterize draws r into dst, which must hold CellW*CellH bytes (stride
