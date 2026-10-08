@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 )
@@ -37,9 +39,18 @@ type Module struct {
 	Exec string `toml:"exec"`
 }
 
+// Tray configures "neferbar tray".
+type Tray struct {
+	// Icons replaces the icon chosen for an item. The key is the item id or
+	// application name, in any case; the value is a Nerd Font glyph name such
+	// as "fa-steam", or the text to show; "" hides the item.
+	Icons map[string]string `toml:"icons"`
+}
+
 // Config is the whole file.
 type Config struct {
 	Bar    Bar      `toml:"bar"`
+	Tray   Tray     `toml:"tray"`
 	Module []Module `toml:"module"`
 }
 
@@ -124,6 +135,12 @@ func (c *Config) Validate() error {
 		case "left", "center", "right":
 		default:
 			return fmt.Errorf("config: module %q: zone must be left, center or right", m.Name)
+		}
+	}
+	for k, v := range c.Tray.Icons {
+		// The tray prints the value on its one output line.
+		if strings.ContainsFunc(v, unicode.IsControl) {
+			return fmt.Errorf("config: tray.icons.%q contains a control character", k)
 		}
 	}
 	return nil

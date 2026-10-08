@@ -9,6 +9,7 @@ require (
 	github.com/bnema/purego-vulkan v0.6.0
 	github.com/bnema/vev-vt v0.6.0
 	github.com/bnema/wlturbo v0.6.2
+	github.com/bnema/zerobus v0.1.1
 	golang.org/x/image v0.46.0
 	golang.org/x/sys v0.48.0
 )

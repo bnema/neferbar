@@ -31,16 +31,17 @@ func TestLoadDefaultsAndModules(t *testing.T) {
 
 func TestLoadErrors(t *testing.T) {
 	for name, body := range map[string]string{
-		"unknown key":  "[bar]\nfnot = 1\n",
-		"bad zone":     "[[module]]\nzone = \"top\"\nexec = \"x\"\n",
-		"no exec":      "[[module]]\nzone = \"left\"\n",
-		"bad size":     "[bar]\nsize = 1\n",
-		"bad scale":    "[bar]\nscale = 20\n",
-		"bad color":    "[bar]\nbackground = \"red\"\n",
-		"position":     "[bar]\nposition = \"middle\"\n",
-		"accent low":   "[bar]\naccent = -1\n",
-		"accent high":  "[bar]\naccent = 16\n",
-		"syntax error": "[bar\n",
+		"unknown key":       "[bar]\nfnot = 1\n",
+		"bad zone":          "[[module]]\nzone = \"top\"\nexec = \"x\"\n",
+		"no exec":           "[[module]]\nzone = \"left\"\n",
+		"bad size":          "[bar]\nsize = 1\n",
+		"bad scale":         "[bar]\nscale = 20\n",
+		"bad color":         "[bar]\nbackground = \"red\"\n",
+		"position":          "[bar]\nposition = \"middle\"\n",
+		"accent low":        "[bar]\naccent = -1\n",
+		"accent high":       "[bar]\naccent = 16\n",
+		"syntax error":      "[bar\n",
+		"tray icon newline": "[tray.icons]\nsteam = \"a\\nb\"\n",
 	} {
 		if _, err := Load(write(t, body), true); err == nil {
 			t.Errorf("%s: want error", name)
