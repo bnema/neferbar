@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,7 +23,31 @@ import (
 	"github.com/bnema/neferbar/internal/config"
 )
 
+// version is set at build time: -ldflags "-X main.version=1.2.3".
+var version = "dev"
+
+// printVersion implements "neferbar version". A binary built without the
+// ldflag reports its module version instead, as with go install pkg@v1.2.3.
+func printVersion(args []string, stdout io.Writer) error {
+	if len(args) > 0 {
+		return fmt.Errorf("unexpected argument %q", args[0])
+	}
+	v := version
+	if info, ok := debug.ReadBuildInfo(); v == "dev" && ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		v = strings.TrimPrefix(info.Main.Version, "v")
+	}
+	_, err := fmt.Fprintln(stdout, v)
+	return err
+}
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		if err := printVersion(os.Args[2:], os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "neferbar version: %v\n", err)
+			os.Exit(2)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "app" {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		err := runApp(ctx, os.Args[2:], os.Getenv("NEFERBAR_DISPLAY"))

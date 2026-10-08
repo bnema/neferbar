@@ -1,0 +1,35 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # The release workflow runs these checks before it publishes.
+  workflow_call:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  # Arch matches the development system: Go and library versions are the
+  # ones the package is built against.
+  check:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+      # An init process reaps killed children, as on a real session.
+      options: --init
+    steps:
+      # The tests run without a compositor or a GPU (the GPU tests skip).
+      # fontconfig and a font run the glyph tests; gcc is for the race detector.
+      - run: >-
+          pacman -Syu --noconfirm --needed
+          git go make gcc fontconfig ttf-dejavu
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - run: make check
+      - run: make race
+      - run: staticcheck ./...

@@ -15,12 +15,23 @@ It needs a compositor with `wlr-layer-shell`, such as Sway, Hyprland, Niri, Rive
 
 ## Install
 
-You need Go 1.27, a Vulkan 1.3 GPU driver, and a [Nerd Font](https://www.nerdfonts.com/).
+You need a Vulkan 1.3 GPU driver and a [Nerd Font](https://www.nerdfonts.com/).
+
+On Arch Linux:
+
+```sh
+paru -S neferbar-bin   # latest release, pre-built
+paru -S neferbar-git   # latest main, built from source
+```
+
+From source, with Go 1.27:
 
 ```sh
 go build -o neferbar ./cmd/neferbar
 ./neferbar
 ```
+
+`neferbar version` prints the installed version. The packages put the example configs and scripts in `/usr/share/doc/neferbar/examples`.
 
 Start it from your compositor's autostart. For NeferWL:
 
