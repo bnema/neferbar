@@ -33,7 +33,7 @@ func main() {
 	}
 	cfgPath := flag.String("config", "", "config file (default: $XDG_CONFIG_HOME/neferbar/config.toml)")
 	display := flag.String("display", os.Getenv("NEFERBAR_DISPLAY"), "Wayland socket name or absolute path (default: $NEFERBAR_DISPLAY, then $WAYLAND_DISPLAY)")
-	pprofAddr := flag.String("pprof", "", "serve pprof on this loopback address, e.g. localhost:6060")
+	pprofAddr := flag.String("pprof", os.Getenv("NEFERBAR_PPROF"), "serve pprof on this loopback address, e.g. localhost:6060 (default: $NEFERBAR_PPROF)")
 	memStats := flag.Duration("memstats", 0, "log allocation counters at this interval (0: off)")
 	flag.Parse()
 
