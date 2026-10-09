@@ -227,11 +227,34 @@ done
 
 An interactive module can ask the bar for a **tooltip** or a **menu** by printing a *control line* instead of a frame. The bar draws it as a popup under the module (above it when `position = "bottom"`), with your theme's colors and font. Only modules with `interactive = true` can open popups, and there is one popup at a time.
 
-A control line is the escape sequence `ESC ] 777 ; neferbar ; <json> BEL`, then a newline:
+A control line is the escape sequence `ESC ] 777 ; neferbar ; <json> BEL`, then a newline. A language with a JSON library makes it easy; in Python:
 
-```sh
-printf '\033]777;neferbar;{"type":"tooltip","col":0,"width":1,"title":"Volume","body":"42%%"}\007\n'
+```python
+import json
+
+def control(message):
+    print(f"\033]777;neferbar;{json.dumps(message)}\007", flush=True)
+
+control({"type": "tooltip", "col": 0, "width": 1, "title": "Volume", "body": "42%"})
 ```
+
+A right-click menu answers the `click` line it opens for:
+
+```python
+for line in sys.stdin:
+    event, *args = line.split()
+    if event == "click" and args[0] == "right":
+        token = int(args[2])
+        control({"type": "menu", "col": 0, "width": 1, "click": token, "items": [
+            {"id": 1, "label": "Mute", "kind": "check", "checked": False},
+            {"id": 0, "kind": "separator"},
+            {"id": 2, "label": "Settings"},
+        ]})
+    elif event == "menu-activate":
+        token, item = map(int, args)   # item is 1 or 2
+```
+
+`examples/modules/volume.py` is a complete module: wheel for the volume, left click to mute, a right-click menu with a check entry and a submenu.
 
 `col` and `width` are the cells the popup points at, counted from the module's first cell, as in the lines the module reads. The JSON objects:
 
@@ -281,6 +304,7 @@ The `examples/modules` directory has these:
 - `static.sh`: one line, then idle.
 - `clock.sh`: a clock with an icon.
 - `rainbow.sh [fps] [width]`: a 60 fps scrolling rainbow.
+- `volume.py`: an interactive volume module with a right-click menu (needs `interactive = true` and `wpctl`).
 
 ## Layout
 
