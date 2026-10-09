@@ -2,7 +2,9 @@ package tray
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -22,6 +24,15 @@ const (
 	maxInputLine = 256
 	// maxSteps bounds the steps of a scroll line.
 	maxSteps = 1 << 16
+	// tooltipDelay is how long the pointer rests on an icon before its
+	// tooltip is sent to the bar.
+	tooltipDelay = 500 * time.Millisecond
+)
+
+// Control lines to the bar: OSC 777 "neferbar", a JSON object, BEL, newline.
+const (
+	controlPrefix = "\x1b]777;neferbar;"
+	controlSuffix = "\x07\n"
 )
 
 // lockedWriter serializes writes from the main loop and the control loop to
@@ -187,6 +198,18 @@ type control struct {
 	mu   sync.Mutex // guards conn and done: ctx ending closes conn from another goroutine
 	conn *zerobus.Conn
 	done bool
+
+	// The tooltip state belongs to the run goroutine.
+	tipTimer *time.Timer
+	hov      hover
+}
+
+// hover is the icon the pointer rests on, and whether its tooltip is shown.
+type hover struct {
+	active     bool
+	dest, path string
+	col        int
+	shown      bool
 }
 
 // run serves lines until ctx ends.
@@ -194,10 +217,15 @@ func (c *control) run(ctx context.Context, lines <-chan string) {
 	stop := context.AfterFunc(ctx, c.close)
 	defer stop()
 	defer c.close()
+	c.tipTimer = time.NewTimer(time.Hour)
+	c.tipTimer.Stop()
+	defer c.tipTimer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-c.tipTimer.C:
+			c.showTooltip()
 		case line := <-lines:
 			cmd, ok := parseCommand(line)
 			if !ok {
@@ -260,7 +288,22 @@ func (c *control) drop(conn *zerobus.Conn) {
 
 func (c *control) handle(cmd command) {
 	switch cmd.verb {
+	case "hover":
+		tg, ok := c.t.target(cmd.col)
+		if !ok { // between icons
+			c.endHover()
+			return
+		}
+		if c.hov.active && c.hov.dest == tg.Dest && c.hov.path == tg.Path {
+			return // still on the same icon
+		}
+		c.endHover()
+		c.hov = hover{active: true, dest: tg.Dest, path: tg.Path, col: cmd.col}
+		c.tipTimer.Reset(tooltipDelay)
+	case "leave":
+		c.endHover()
 	case "click":
+		c.endHover()
 		tg, ok := c.t.target(cmd.col)
 		if !ok {
 			return
@@ -290,6 +333,58 @@ func (c *control) handle(cmd command) {
 			orientation = "vertical"
 		}
 		c.call(tg, "Scroll", "is", func(e *zerobus.Encoder) { e.Int32(cmd.delta); e.Str(orientation) })
+	}
+}
+
+// endHover stops the tooltip timer and, if the tooltip was sent, tells the bar
+// to close it.
+func (c *control) endHover() {
+	c.tipTimer.Stop()
+	if c.hov.shown {
+		c.emit(map[string]string{"type": "close"})
+	}
+	c.hov = hover{}
+}
+
+// showTooltip sends the tooltip of the hovered icon when the pointer is still
+// on it and the application has something to say.
+func (c *control) showTooltip() {
+	if !c.hov.active || c.hov.shown {
+		return
+	}
+	tg, ok := c.t.target(c.hov.col)
+	if !ok || tg.Dest != c.hov.dest || tg.Path != c.hov.path {
+		c.endHover()
+		return
+	}
+	title, body := plainText(tg.TipTitle), plainText(tg.TipBody)
+	if title == "" && body == "" {
+		return
+	}
+	c.hov.shown = true
+	c.emit(struct {
+		Type  string `json:"type"`
+		Col   int    `json:"col"`
+		Width int    `json:"width"`
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}{"tooltip", tg.Start, tg.Width, title, body})
+}
+
+// emit writes a control line for the bar.
+func (c *control) emit(v any) {
+	var buf bytes.Buffer
+	buf.WriteString(controlPrefix)
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false) // "&" and "<" stay readable; the bar parses JSON either way
+	if err := enc.Encode(v); err != nil {
+		c.log.Warn("tray: cannot encode a control line", "err", err)
+		return
+	}
+	buf.Truncate(buf.Len() - 1) // Encode ends with a newline; the BEL goes first
+	buf.WriteString(controlSuffix)
+	if _, err := c.t.opt.Out.Write(buf.Bytes()); err != nil {
+		c.log.Debug("tray: cannot write a control line", "err", err)
 	}
 }
 
