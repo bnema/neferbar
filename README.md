@@ -256,7 +256,7 @@ for line in sys.stdin:
 
 `examples/modules/status.py` is a complete module: volume, Wi-Fi and battery icons that follow their level, a tooltip on each with the numbers, and a right-click menu on each (mute and volume levels, Wi-Fi networks, power profiles).
 
-`col` and `width` are the cells the popup points at, counted from the module's first cell, as in the lines the module reads. The JSON objects:
+`col` and `width` are the cells the popup points at, counted from the module's first cell, as in the lines the module reads; `width` is at least 1. The JSON objects:
 
 | `type` | Fields | Effect |
 |---|---|---|
@@ -266,9 +266,9 @@ for line in sys.stdin:
 
 A menu item is `{"id": 3, "label": "Mute", "kind": "check", "enabled": true, "checked": true, "items": [...]}`. `id` is a number you choose (0 or more), `kind` is `normal` (default), `separator`, `check` or `radio`, `enabled` defaults to true, and `items` makes it a submenu, which opens in place with a "‹ Back" entry. When the user picks an item the module reads `menu-activate <token> <id>`; when the menu closes any other way (Escape, a click elsewhere) it reads `menu-closed <token>`. The token is the `click` value of the menu.
 
-The bar opens a menu only for the latest click on the same module, at most 5 seconds old, and only once per click. A tooltip appears only while the module is hovered, and closes when the pointer leaves the module or a button is pressed.
+The bar opens a menu only for the latest click on the same module, at most 5 seconds old, and only once per click. A tooltip appears only while the module is hovered, and closes when the pointer leaves the module or a button is pressed. A module opens at most one tooltip every 250 ms, and a tooltip never covers an open menu.
 
-Limits: a control line is at most 64 KiB, a menu has at most 512 items in 8 levels, labels, titles and table cells are cut at 256 bytes, a tooltip body at 1024 bytes, a table has at most 32 rows of 4 cells. Control characters are removed from the texts. A control line that breaks a rule is ignored, logged once per module, and never shown as text. A line that starts like a control line but has no BEL is an ordinary frame.
+Limits: a control line is at most 64 KiB, a menu has at most 512 items in 8 levels, labels, titles and table cells are cut at 256 bytes, a tooltip body at 1024 bytes, a table has at most 32 rows of 4 cells. Control characters are removed from the texts. A control line that breaks a rule is ignored, logged once, and never shown as text. A line that starts like a control line but has no BEL is an ordinary frame.
 
 ### The bundled bar
 
@@ -304,7 +304,7 @@ The `examples/modules` directory has these:
 - `static.sh`: one line, then idle.
 - `clock.sh`: a clock with an icon.
 - `rainbow.sh [fps] [width]`: a 60 fps scrolling rainbow.
-- `status.py`: volume, Wi-Fi and battery with tooltips and right-click menus (needs `interactive = true`; uses `wpctl`, `nmcli` and `powerprofilesctl`).
+- `status.py`: volume, Wi-Fi and battery with tooltips and right-click menus (needs `interactive = true`; uses `wpctl`, `nmcli` and `powerprofilesctl`, and optionally `pavucontrol` and `nmtui`).
 
 ## Layout
 

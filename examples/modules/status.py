@@ -14,7 +14,8 @@ Each icon changes with its level; the numbers are in the tooltips.
     battery                                                   right: power profile
 
 Needs wpctl (PipeWire), nmcli (NetworkManager) and powerprofilesctl; an icon
-whose tool is missing is not shown. Edit the commands below to taste.
+whose tool is missing is not shown. The mixer (pavucontrol) and the network
+settings (nmtui in $TERMINAL) are optional. Edit the commands below to taste.
 """
 
 import json
@@ -52,7 +53,8 @@ BOLD, RESET = "\033[1m", "\033[0m"
 def run(*cmd):
     """Output of a command, or "" when it fails."""
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=3).stdout
+        return subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                              timeout=3).stdout
     except (OSError, subprocess.SubprocessError):
         return ""
 
@@ -61,7 +63,8 @@ def act(*cmd):
     """Run an action the user asked for. A failure goes to stderr, which the
     bar writes to its log."""
     try:
-        done = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        done = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                              timeout=10)
     except (OSError, subprocess.SubprocessError) as err:
         print(f"{cmd[0]}: {err}", file=sys.stderr, flush=True)
         return False
@@ -75,8 +78,8 @@ def launch(*cmd):
     try:
         subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, start_new_session=True)
-    except OSError:
-        pass
+    except OSError as err:
+        print(f"{cmd[0]}: {err}", file=sys.stderr, flush=True)
 
 
 def control(message):
@@ -98,14 +101,25 @@ def read(path):
         return ""
 
 
-def foreground(hex_color):
+def number(s, kind=int):
+    """s as a number, 0 when it is not one."""
+    try:
+        return kind(s)
+    except ValueError:
+        return 0
+
+
+def rgb(hex_color):
     h = hex_color.lstrip("#")
-    return f"\033[38;2;{int(h[0:2], 16)};{int(h[2:4], 16)};{int(h[4:6], 16)}m"
+    return f"{int(h[0:2], 16)};{int(h[2:4], 16)};{int(h[4:6], 16)}"
+
+
+def foreground(hex_color):
+    return f"\033[38;2;{rgb(hex_color)}m"
 
 
 def background(hex_color):
-    h = hex_color.lstrip("#")
-    return f"\033[48;2;{int(h[0:2], 16)};{int(h[2:4], 16)};{int(h[4:6], 16)}m"
+    return f"\033[48;2;{rgb(hex_color)}m"
 
 
 # The bar drops blank cells at the end of a module; one painted with the bar's
@@ -121,7 +135,7 @@ class Volume:
     def read(self):
         # "Volume: 0.42" or "Volume: 0.42 [MUTED]"
         out = run("wpctl", "get-volume", SINK).split()
-        self.percent = round(float(out[1]) * 100) if len(out) > 1 else 0
+        self.percent = round(number(out[1], float) * 100) if len(out) > 1 else 0
         self.muted = "[MUTED]" in out
 
     def icon(self):
@@ -152,7 +166,7 @@ class Volume:
 
     def scroll(self, direction, steps):
         sign = "+" if direction in ("up", "right") else "-"
-        run("wpctl", "set-volume", "-l", "1.0", SINK, f"{steps * VOLUME_STEP}%{sign}")
+        act("wpctl", "set-volume", "-l", "1.0", SINK, f"{steps * VOLUME_STEP}%{sign}")
 
     def mute(self):
         act("wpctl", "set-mute", SINK, "toggle")
@@ -176,14 +190,19 @@ class Wifi:
                 self.ethernet = True
         self.networks = []
         seen = set()
-        for line in run("nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,FREQ,SECURITY",
+        # SSID comes last: it is the only field that can hold a ':'.
+        for line in run("nmcli", "-t", "-f", "IN-USE,SIGNAL,FREQ,SSID",
                         "device", "wifi", "list", "--rescan", "no").splitlines():
-            in_use, ssid, signal, freq, security = split_terse(line)
+            fields = line.split(":", 3)
+            if len(fields) < 4:
+                continue
+            in_use, signal, freq = fields[0], number(fields[1]), fields[2]
+            ssid = re.sub(r"\\(.)", r"\1", fields[3])  # nmcli writes ':' as '\:'
             if in_use == "*":
-                self.ssid, self.signal, self.freq = ssid, int(signal or 0), freq
+                self.ssid, self.signal, self.freq = ssid, signal, freq
             if ssid and ssid not in seen:
                 seen.add(ssid)
-                self.networks.append((ssid, int(signal or 0), security))
+                self.networks.append((ssid, signal))
         self.networks.sort(key=lambda n: -n[1])
 
     def icon(self):
@@ -209,7 +228,7 @@ class Wifi:
     def menu(self):
         networks = [(f"{ssid}  {signal}%", "radio", ssid == self.ssid,
                      lambda ssid=ssid: self.connect(ssid))
-                    for ssid, signal, _ in self.networks[:15]]
+                    for ssid, signal in self.networks[:15]]
         items = [("Wi-Fi", "check", self.enabled, lambda: self.toggle())]
         if self.enabled and networks:
             items += [None, ("Networks", networks)]
@@ -228,18 +247,12 @@ class Wifi:
 
     def connect(self, ssid):
         # Uses the saved profile; a new secured network needs the settings TUI.
-        if not act("nmcli", "device", "wifi", "connect", ssid):
+        # The module waits for nmcli (at most 8 s) before it reads events again.
+        if not act("nmcli", "--wait", "8", "device", "wifi", "connect", ssid):
             self.settings()
 
     def settings(self):
         launch(TERMINAL, "-e", *NETWORK_SETTINGS)
-
-
-def split_terse(line):
-    """Split an nmcli -t line: fields are separated by ':', and '\\:' is a colon."""
-    fields = [f.replace("\\:", ":").replace("\\\\", "\\")
-              for f in re.split(r"(?<!\\):", line)]
-    return (fields + [""] * 5)[:5]
 
 
 # --- battery -----------------------------------------------------------------
@@ -257,19 +270,18 @@ class Battery:
     available = path != ""
 
     def read(self):
-        self.percent = int(read(f"{self.path}/capacity") or 0)
+        value = lambda name: number(read(f"{self.path}/{name}"))
+        self.percent = value("capacity")
         self.status = read(f"{self.path}/status")
-        power = int(read(f"{self.path}/power_now") or 0)
-        if not power:  # some batteries report a current instead of a power
-            current = int(read(f"{self.path}/current_now") or 0)
-            power = current * int(read(f"{self.path}/voltage_now") or 0) // 1_000_000
-        self.watts = power / 1_000_000
-        self.now = int(read(f"{self.path}/energy_now") or 0)
-        self.full = int(read(f"{self.path}/energy_full") or 0)
+        # Some batteries report a current and a charge (µA, µAh) instead of a
+        # power and an energy (µW, µWh); some report them negative.
+        volts = value("voltage_now") / 1_000_000
+        self.watts = abs(value("power_now") or value("current_now") * volts) / 1_000_000
+        self.now = value("energy_now") or value("charge_now") * volts
+        self.full = value("energy_full") or value("charge_full") * volts
 
     def icon(self):
-        icons = BATTERY_CHARGING if self.status == "Charging" else BATTERY_ICONS
-        icon = icons[min(10, self.percent // 10)]
+        icon = level(BATTERY_CHARGING if self.status == "Charging" else BATTERY_ICONS, self.percent)
         if self.status == "Discharging" and self.percent <= 20:
             color = foreground(os.environ.get("NEFERBAR_COLOR15", "#ffffff"))
             return f"{BOLD}{color}{icon}{RESET}"
@@ -279,6 +291,7 @@ class Battery:
         rows = [("Charge", f"{self.percent}%"), ("State", self.status)]
         if self.watts:
             rows.append(("Power", f"{self.watts:.1f} W"))
+        if self.watts and self.now:
             if self.status == "Discharging":
                 rows.append(("Time left", hours(self.now / (self.watts * 1e6))))
             elif self.status == "Charging":
@@ -318,6 +331,8 @@ class Module:
         self.tooltip_at = None
         self.tooltip_shown = False
         self.actions = {}  # menu item id -> function, for the open menu
+        self.menu_token = None
+        self.menu_part = None
         self.read(all_parts=True)
 
     def read(self, all_parts=False):
@@ -356,10 +371,13 @@ class Module:
         self.tooltip_at = None
 
     def open_menu(self, part, token):
-        part.read()
         self.actions = {}
+        items = self.items(part.menu())
+        if not items:
+            return  # the bar refuses an empty menu
+        self.menu_token, self.menu_part = token, part
         control({"type": "menu", "col": self.col_of(part), "width": 1,
-                 "click": token, "items": self.items(part.menu())})
+                 "click": token, "items": items})
 
     def items(self, entries):
         """Turn (label, action), (label, kind, checked, action), (label, [entries])
@@ -405,14 +423,21 @@ class Module:
         elif event == "scroll" and part is not None:
             direction, steps, _ = args
             part.scroll(direction, int(steps))
-        elif event == "menu-activate":
-            action = self.actions.pop(int(args[1]), None)
-            self.actions = {}
-            if action:
-                action()
+            if self.tooltip_shown:
+                # The bar opens one tooltip per 250 ms: show the new level
+                # once the wheel stops, in case the last one was dropped.
+                self.tooltip_at = time.monotonic() + TOOLTIP_DELAY
+        elif event in ("menu-activate", "menu-closed"):
+            if int(args[0]) != self.menu_token:
+                return  # an older menu
+            action = self.actions.get(int(args[1])) if event == "menu-activate" else None
+            part, self.actions, self.menu_token, self.menu_part = self.menu_part, {}, None, None
+            if action is None:
+                return
+            action()
         else:
-            return  # menu-closed
-        self.read(all_parts=True)
+            return
+        part.read()
         self.draw()
 
     def run(self):
@@ -425,8 +450,8 @@ class Module:
             ready, _, _ = select.select([0], [], [], max(0, min(deadlines) - now))
             if ready:
                 chunk = os.read(0, 4096)
-                if not chunk:
-                    return  # the bar is gone
+                if not chunk:  # stdin is empty when the module is not interactive
+                    sys.exit("status.py needs interactive = true")
                 pending += chunk
                 while b"\n" in pending:
                     line, pending = pending.split(b"\n", 1)
