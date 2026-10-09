@@ -341,10 +341,21 @@ The icon takes the main color of the application's own icon, moved toward the ba
 
 - a left click calls the application's `Activate` (for an application that only offers a menu, it asks for the menu instead);
 - a middle click calls `SecondaryActivate`;
-- a right click calls `ContextMenu`, so the application shows its own menu;
+- a right click opens the application's menu, drawn by the bar (see below); an application without a dbusmenu is asked to show its own with `ContextMenu`;
 - the wheel calls `Scroll`: down and right are positive.
 
 Without `interactive = true` the icons only show. The tray talks to each application on a second connection and gives up on a call after 2 seconds, so a frozen application never blocks the other icons.
+
+**Menus.** For an application that publishes a dbusmenu (most do: Steam, Discord, nm-applet, the KDE applets), a right click opens its menu as a popup under the icon, or above it with `position = "bottom"`. A menu taller than 600 pixels scrolls. Check and radio entries show their state, disabled entries do nothing, and an entry with a submenu opens it in place, with a "‹ Back" entry on top. Choosing an entry sends the application a `clicked` event; dismissing the menu sends `closed`.
+
+| Key | Action |
+|---|---|
+| Down, Up, Tab, Shift+Tab | move between entries |
+| Enter, Space | choose the highlighted entry |
+| Left, BackSpace | go back out of a submenu |
+| Escape | close the menu |
+
+A click outside the menu also closes it. Entries are text only: icons and menus that fill in their submenus lazily are not supported.
 
 Resting the pointer on an icon for half a second shows the application's **tooltip** (its title in bold, its description below, markup removed; the item's title when it has no tooltip). Leaving the icon or clicking closes it.
 
