@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -55,7 +56,8 @@ type Module struct {
 	dirty   bool
 	failed  bool // the script is not running; show an error marker
 
-	input chan event // lines for the script's stdin
+	input chan event    // lines for the script's stdin
+	gen   atomic.Uint64 // counts script starts; see Gen
 
 	wake chan<- struct{}
 	log  *slog.Logger
@@ -77,6 +79,11 @@ func New(name string, zone Zone, command string, wake chan<- struct{}, log *slog
 	return &Module{Name: name, Zone: zone, Exec: command, wake: wake, log: log,
 		pending: make([]byte, 0, MaxFrame), input: make(chan event, 32)}
 }
+
+// Gen counts the times the script was started. A value that changed means a
+// new process, which knows nothing of the pointer state sent to the old one.
+// It does not allocate.
+func (m *Module) Gen() uint64 { return m.gen.Load() }
 
 // Send queues line (without a newline) for the script's stdin. It never
 // blocks and does not allocate. It reports false when the module is not
@@ -181,6 +188,7 @@ func (m *Module) Run(ctx context.Context) {
 }
 
 func (m *Module) runOnce(ctx context.Context) error {
+	m.gen.Add(1)
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", m.Exec)
 	cmd.Stderr = &logWriter{log: m.log, name: m.Name}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGTERM}

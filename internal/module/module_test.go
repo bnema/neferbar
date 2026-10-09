@@ -226,3 +226,26 @@ func TestSendAllocs(t *testing.T) {
 		t.Errorf("Send allocates %.1f objects; want 0", got)
 	}
 }
+
+func TestGenCountsStarts(t *testing.T) {
+	wake := make(chan struct{}, 1)
+	m := New("t", Left, "printf 'hi\\n'", wake, slog.New(slog.DiscardHandler))
+	if m.Gen() != 0 {
+		t.Fatalf("Gen before start = %d", m.Gen())
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go m.Run(ctx)
+	deadline := time.After(4 * time.Second)
+	for m.Gen() < 2 { // the script exits at once and is restarted
+		select {
+		case <-wake:
+		case <-time.After(20 * time.Millisecond):
+		case <-deadline:
+			t.Fatalf("Gen = %d, want at least 2 after a restart", m.Gen())
+		}
+	}
+	if allocs := testing.AllocsPerRun(100, func() { m.Gen() }); allocs != 0 {
+		t.Errorf("Gen allocates %v", allocs)
+	}
+}
