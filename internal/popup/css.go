@@ -45,6 +45,9 @@ func CSS(s Style) string {
 	b.WriteString(".title { font-weight: bold; }\n")
 	b.WriteString(".body { opacity: 0.85; }\n")
 	b.WriteString("button.item, checkbox.item { text-align: left; background-color: transparent; padding: 2px 12px; }\n")
+	// nefergui paints the 1em check box centered in the left padding: leave
+	// room on both sides of it so the label does not touch the box.
+	b.WriteString("checkbox.item { padding-left: 2em; }\n")
 	fmt.Fprintf(&b, "button.item:hover, checkbox.item:hover, button.item:focus-visible, checkbox.item:focus-visible { background-color: %s; color: %s; }\n", ac, bg)
 	b.WriteString("button.item:disabled, checkbox.item:disabled { opacity: 0.5; }\n")
 	fmt.Fprintf(&b, "button.item:disabled:hover, checkbox.item:disabled:hover { background-color: transparent; color: %s; }\n", fg)

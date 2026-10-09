@@ -89,6 +89,7 @@ func TestCSS(t *testing.T) {
 .title { font-weight: bold; }
 .body { opacity: 0.85; }
 button.item, checkbox.item { text-align: left; background-color: transparent; padding: 2px 12px; }
+checkbox.item { padding-left: 2em; }
 button.item:hover, checkbox.item:hover, button.item:focus-visible, checkbox.item:focus-visible { background-color: #3584e4; color: #102030; }
 button.item:disabled, checkbox.item:disabled { opacity: 0.5; }
 button.item:disabled:hover, checkbox.item:disabled:hover { background-color: transparent; color: #cccccc; }
