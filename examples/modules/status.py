@@ -89,6 +89,16 @@ def foreground(hex_color):
     return f"\033[38;2;{int(h[0:2], 16)};{int(h[2:4], 16)};{int(h[4:6], 16)}m"
 
 
+def background(hex_color):
+    h = hex_color.lstrip("#")
+    return f"\033[48;2;{int(h[0:2], 16)};{int(h[2:4], 16)};{int(h[4:6], 16)}m"
+
+
+# The bar drops blank cells at the end of a module; one painted with the bar's
+# own background is kept, and keeps the last icon off the next module.
+GAP = background(os.environ.get("NEFERBAR_BACKGROUND", "#000000")) + " " + "\033[0m"
+
+
 # --- volume ------------------------------------------------------------------
 
 class Volume:
@@ -302,8 +312,7 @@ class Module:
     def draw(self):
         # One icon per part, separated by a space: part i is at column 2*i.
         self.cols = {2 * i: part for i, part in enumerate(self.parts)}
-        # A trailing space keeps the last icon off the next module.
-        frame = " ".join(part.icon() for part in self.parts) + " "
+        frame = " ".join(part.icon() for part in self.parts) + GAP
         if frame != self.last_frame:
             self.last_frame = frame
             print(frame, flush=True)
