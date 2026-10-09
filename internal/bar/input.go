@@ -10,6 +10,7 @@ import (
 
 	"github.com/bnema/neferbar/internal/layout"
 	"github.com/bnema/neferbar/internal/module"
+	"github.com/bnema/neferbar/internal/popup"
 )
 
 // Evdev button codes.
@@ -24,9 +25,28 @@ const pxPerStep = 15
 
 // press is the latest button press sent to a module.
 type press struct {
-	token  uint32 // the number the module echoes to refer to this press
-	serial uint32 // the pointer serial of the press, for popup grabs
+	m      *module.Module // the module the press was sent to
+	token  uint32         // the number the module echoes to refer to this press
+	serial uint32         // the pointer serial of the press, for popup grabs
 	at     time.Time
+	used   bool // a menu already answered this press
+}
+
+// menuPressTTL is how long after a press a module may still answer it with a
+// menu.
+const menuPressTTL = 5 * time.Second
+
+// takeMenuPress accepts a menu that module m opens in answer to the press
+// numbered token: it must be the latest press, sent to m, not older than
+// menuPressTTL, and not answered yet. The serial of the press is what the
+// popup grabs with. A press answers one menu.
+func (p *pointerState) takeMenuPress(m *module.Module, token uint32, now time.Time) (serial uint32, ok bool) {
+	pr := &p.press
+	if m == nil || pr.m != m || token == 0 || pr.token != token || pr.used || pr.serial == 0 || now.Sub(pr.at) > menuPressTTL {
+		return 0, false
+	}
+	pr.used = true
+	return pr.serial, true
 }
 
 // pointerState turns pointer events over the bar into the lines of the module
@@ -107,7 +127,7 @@ func (p *pointerState) button(lay *layout.Layout, col int, code uint32, serial u
 		return
 	}
 	p.token++
-	p.press = press{token: p.token, serial: serial, at: time.Now()}
+	p.press = press{m: m, token: p.token, serial: serial, at: time.Now()}
 	b := append(p.line("click "), name...)
 	b = appendInt(b, off)
 	b = append(b, ' ')
@@ -204,10 +224,7 @@ func (a *wheelAcc) add(axis uint32, value120 int32, delta float64) int32 {
 // inputRect is the logical-pixel rectangle of a span of cells: rounded
 // outward, full surface height.
 func inputRect(start, width, cellW int, scale float64, height int32) neferclient.Rect {
-	const eps = 1e-9
-	x0 := int32(math.Floor(float64(start)*float64(cellW)/scale + eps))
-	x1 := int32(math.Ceil(float64(start+width)*float64(cellW)/scale - eps))
-	return neferclient.Rect{X: x0, Y: 0, Width: x1 - x0, Height: height}
+	return popup.CellRect(start, width, cellW, scale, height)
 }
 
 // inputKey is everything but the spans that the input rectangles depend on.
