@@ -23,7 +23,10 @@ import (
 const (
 	// MaxFrame bounds one frame; longer lines are truncated.
 	MaxFrame = 16 << 10
-	readSize = 32 << 10
+	// MaxControl bounds one control line (see ParseControl); longer ones are
+	// dropped.
+	MaxControl = 64 << 10
+	readSize   = 32 << 10
 
 	minBackoff = 500 * time.Millisecond
 	maxBackoff = 30 * time.Second
@@ -56,8 +59,9 @@ type Module struct {
 	dirty   bool
 	failed  bool // the script is not running; show an error marker
 
-	input chan event    // lines for the script's stdin
-	gen   atomic.Uint64 // counts script starts; see Gen
+	input   chan event    // lines for the script's stdin
+	control chan []byte   // control lines of the script, see TakeControl
+	gen     atomic.Uint64 // counts script starts; see Gen
 
 	wake chan<- struct{}
 	log  *slog.Logger
@@ -77,7 +81,7 @@ type event struct {
 // New creates a module. wake receives a non-blocking signal after each frame.
 func New(name string, zone Zone, command string, wake chan<- struct{}, log *slog.Logger) *Module {
 	return &Module{Name: name, Zone: zone, Exec: command, wake: wake, log: log,
-		pending: make([]byte, 0, MaxFrame), input: make(chan event, 32)}
+		pending: make([]byte, 0, MaxFrame), input: make(chan event, 32), control: make(chan []byte, 8)}
 }
 
 // Gen counts the times the script was started. A value that changed means a
@@ -262,22 +266,69 @@ func (m *Module) pumpInput(w io.WriteCloser) (stop func()) {
 	}
 }
 
-// readFrames splits r into frames and publishes each one.
+// controlPrefix starts a control line: an OSC 777 sequence of the "neferbar"
+// application, ended by controlEnd (BEL) before the newline.
+const (
+	controlPrefix = "\x1b]777;neferbar;"
+	controlEnd    = '\x07'
+)
+
+// TakeControl returns the oldest control line the script printed, the JSON
+// between the prefix and the BEL, or false when there is none. It never blocks.
+func (m *Module) TakeControl() ([]byte, bool) {
+	select {
+	case b := <-m.control:
+		return b, true
+	default:
+		return nil, false
+	}
+}
+
+// queueControl keeps a copy of the JSON of a control line. A full queue drops
+// the line: the bar is not draining it.
+func (m *Module) queueControl(json []byte) {
+	select {
+	case m.control <- append([]byte(nil), json...):
+		m.signal()
+	default:
+		m.log.Debug("module control queue full; line dropped", "module", m.Name)
+	}
+}
+
+// line handles one complete line: a control line, or else a frame.
+func (m *Module) line(line []byte, over bool) {
+	if bytes.HasPrefix(line, []byte(controlPrefix)) {
+		switch {
+		case over:
+			m.log.Warn("module control line too long; dropped", "module", m.Name, "max", MaxControl)
+			return
+		case len(line) > 0 && line[len(line)-1] == controlEnd:
+			m.queueControl(line[len(controlPrefix) : len(line)-1])
+			return
+		}
+		// No BEL: not a control line; it is shown like any text.
+	}
+	m.publish(line[:min(len(line), MaxFrame)])
+}
+
+// readFrames splits r into frames and publishes each one. Control lines go to
+// the control queue instead.
 func (m *Module) readFrames(r io.Reader) {
 	buf := make([]byte, readSize)
-	frame := make([]byte, 0, MaxFrame)
+	line := make([]byte, 0, MaxFrame)
+	over := false // the current line is longer than MaxControl
 	for {
 		n, err := r.Read(buf)
 		chunk := buf[:n]
 		for len(chunk) > 0 {
 			i := bytes.IndexAny(chunk, "\n\f")
 			if i < 0 {
-				frame = appendCapped(frame, chunk)
+				line, over = appendCapped(line, chunk, over)
 				break
 			}
-			frame = appendCapped(frame, chunk[:i])
-			m.publish(frame)
-			frame = frame[:0]
+			line, over = appendCapped(line, chunk[:i], over)
+			m.line(line, over)
+			line, over = line[:0], false
 			chunk = chunk[i+1:]
 		}
 		if err != nil {
@@ -286,11 +337,13 @@ func (m *Module) readFrames(r io.Reader) {
 	}
 }
 
-func appendCapped(dst, src []byte) []byte {
-	if room := MaxFrame - len(dst); len(src) > room {
-		src = src[:max(room, 0)]
+// appendCapped appends src to dst up to MaxControl bytes and reports whether
+// anything was left out.
+func appendCapped(dst, src []byte, over bool) ([]byte, bool) {
+	if room := MaxControl - len(dst); len(src) > room {
+		src, over = src[:max(room, 0)], true
 	}
-	return append(dst, src...)
+	return append(dst, src...), over
 }
 
 // logWriter forwards a script's stderr lines to the bar's log.
