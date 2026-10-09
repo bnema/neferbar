@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // Inset is the space the popup stylesheet puts between the surface edge and
@@ -21,11 +22,13 @@ type Style struct {
 
 func hex(c [3]uint8) string { return fmt.Sprintf("#%02x%02x%02x", c[0], c[1], c[2]) }
 
-// cssString makes a font name safe inside a quoted CSS string.
+// cssString makes a font name safe inside a quoted CSS string: it drops the
+// characters that could end the string or the declaration, and everything that
+// does not print (control characters, bidi marks, unassigned runes).
 func cssString(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch {
-		case r == '"' || r == '\\' || r == '{' || r == '}' || r == ';' || r < ' ' || r == 0x7f:
+		case r == '"' || r == '\\' || r == '{' || r == '}' || r == ';' || !unicode.IsPrint(r):
 			return -1
 		}
 		return r
@@ -37,7 +40,7 @@ func CSS(s Style) string {
 	fg, bg, ac := hex(s.FG), hex(s.BG), hex(s.Accent)
 	size := strconv.FormatFloat(s.Size, 'f', -1, 64)
 	var b strings.Builder
-	fmt.Fprintf(&b, "app { background-color: %s; color: %s; font-family: %q; font-size: %spx; padding: 4px; border: 1px solid %s; }\n",
+	fmt.Fprintf(&b, "app { background-color: %s; color: %s; font-family: \"%s\"; font-size: %spx; padding: 4px; border: 1px solid %s; }\n",
 		bg, fg, cssString(s.Font), size, ac)
 	b.WriteString(".title { font-weight: bold; }\n")
 	b.WriteString(".body { opacity: 0.85; }\n")
@@ -49,15 +52,32 @@ func CSS(s Style) string {
 	return b.String()
 }
 
-// WriteCSS stores css as popup.css in $XDG_RUNTIME_DIR/neferbar (directory
-// 0700, file 0600, replaced atomically) and returns the path. nefergui reads
-// its stylesheet from a path.
-func WriteCSS(css string) (string, error) {
+// CSSPath is the stylesheet of this process, popup-<pid>.css in
+// $XDG_RUNTIME_DIR/neferbar: two bars never overwrite each other's file.
+func CSSPath() (string, error) {
 	rt := os.Getenv("XDG_RUNTIME_DIR")
 	if rt == "" {
 		return "", fmt.Errorf("popup: XDG_RUNTIME_DIR is not set")
 	}
-	dir := filepath.Join(rt, "neferbar")
+	return filepath.Join(rt, "neferbar", "popup-"+strconv.Itoa(os.Getpid())+".css"), nil
+}
+
+// RemoveCSS deletes this process's stylesheet, if it was written.
+func RemoveCSS() {
+	if p, err := CSSPath(); err == nil {
+		_ = os.Remove(p)
+	}
+}
+
+// WriteCSS stores css as CSSPath (directory 0700, file 0600, replaced
+// atomically) and returns the path. nefergui reads its stylesheet from a path.
+// Call RemoveCSS when done.
+func WriteCSS(css string) (string, error) {
+	path, err := CSSPath()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("popup: %w", err)
 	}
@@ -76,7 +96,6 @@ func WriteCSS(css string) (string, error) {
 	if err == nil {
 		err = os.Chmod(tmp, 0o600)
 	}
-	path := filepath.Join(dir, "popup.css")
 	if err == nil {
 		err = os.Rename(tmp, path)
 	}

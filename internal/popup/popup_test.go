@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -95,6 +96,14 @@ separator { background-color: #cccccc; opacity: 0.3; margin: 4px 0; }
 	if got != want {
 		t.Fatalf("CSS =\n%s\nwant\n%s", got, want)
 	}
+	// Non-ASCII names stay as they are: %q would have turned them into escapes.
+	if got := CSS(Style{Font: "JetBrainsMono Nerd Font Mono é", Size: 10}); !strings.Contains(got, `font-family: "JetBrainsMono Nerd Font Mono é";`) {
+		t.Fatalf("font-family changed:\n%s", got)
+	}
+	// Runes that do not print are dropped: controls, bidi overrides, DEL, BOM.
+	if got := cssString("a\u202eb\u0000c\x7fd\ufeffe\u200bf\n"); got != "abcdef" {
+		t.Fatalf("cssString = %q", got)
+	}
 	// A font name cannot break out of the declaration.
 	evil := CSS(Style{Font: `x"; } body { `, Size: 10})
 	if strings.Count(evil, "{") != strings.Count(want, "{") {
@@ -109,7 +118,7 @@ func TestWriteCSSPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if path != filepath.Join(dir, "neferbar", "popup.css") {
+	if path != filepath.Join(dir, "neferbar", "popup-"+strconv.Itoa(os.Getpid())+".css") {
 		t.Fatalf("path = %s", path)
 	}
 	for p, want := range map[string]os.FileMode{filepath.Dir(path): 0o700, path: 0o600} {
@@ -128,6 +137,19 @@ func TestWriteCSSPermissions(t *testing.T) {
 	if ents, _ := os.ReadDir(filepath.Dir(path)); len(ents) != 1 {
 		t.Fatalf("directory holds %d entries, want 1", len(ents))
 	}
+	// Another bar's file is left alone; ours is removed.
+	other := filepath.Join(filepath.Dir(path), "popup-1.css")
+	if err = os.WriteFile(other, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	RemoveCSS()
+	if _, err = os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("RemoveCSS left %s (%v)", path, err)
+	}
+	if _, err = os.Stat(other); err != nil {
+		t.Fatalf("RemoveCSS touched another bar's file: %v", err)
+	}
+	RemoveCSS() // twice is fine
 	t.Setenv("XDG_RUNTIME_DIR", "")
 	if _, err = WriteCSS("x"); err == nil {
 		t.Fatal("no runtime dir must fail")
