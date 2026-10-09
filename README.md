@@ -223,6 +223,30 @@ while read -r event button col token; do
 done
 ```
 
+### Popups
+
+An interactive module can ask the bar for a **tooltip** or a **menu** by printing a *control line* instead of a frame. The bar draws it as a popup under the module (above it when `position = "bottom"`), with your theme's colors and font. Only modules with `interactive = true` can open popups, and there is one popup at a time.
+
+A control line is the escape sequence `ESC ] 777 ; neferbar ; <json> BEL`, then a newline:
+
+```sh
+printf '\033]777;neferbar;{"type":"tooltip","col":0,"width":1,"title":"Volume","body":"42%%"}\007\n'
+```
+
+`col` and `width` are the cells the popup points at, counted from the module's first cell, as in the lines the module reads. The JSON objects:
+
+| `type` | Fields | Effect |
+|---|---|---|
+| `tooltip` | `col`, `width`, `title`, `body` | shown only while the pointer is on the module; `body` may hold newlines |
+| `menu` | `col`, `width`, `click`, `items` | opens a menu; `click` is the token of the `click` line it answers |
+| `close` | none | closes the module's tooltip |
+
+A menu item is `{"id": 3, "label": "Mute", "kind": "check", "enabled": true, "checked": true, "items": [...]}`. `id` is a number you choose (0 or more), `kind` is `normal` (default), `separator`, `check` or `radio`, `enabled` defaults to true, and `items` makes it a submenu, which opens in place with a "‹ Back" entry. When the user picks an item the module reads `menu-activate <token> <id>`; when the menu closes any other way (Escape, a click elsewhere) it reads `menu-closed <token>`. The token is the `click` value of the menu.
+
+The bar opens a menu only for the latest click on the same module, at most 5 seconds old, and only once per click. A tooltip appears only while the module is hovered, and closes when the pointer leaves the module or a button is pressed.
+
+Limits: a control line is at most 64 KiB, a menu has at most 512 items in 8 levels, labels and titles are cut at 256 bytes, a tooltip body at 1024 bytes. Control characters are removed from the texts. A control line that breaks a rule is ignored, logged once per module, and never shown as text. A line that starts like a control line but has no BEL is an ordinary frame.
+
 ### The bundled bar
 
 `examples/bundle` is a ready-made bar: workspaces on the left, the focused app in the middle, the clock on the right, in your terminal's colors.
@@ -320,7 +344,9 @@ The icon takes the main color of the application's own icon, moved toward the ba
 - a right click calls `ContextMenu`, so the application shows its own menu;
 - the wheel calls `Scroll`: down and right are positive.
 
-Without `interactive = true` the icons only show. The tray talks to each application on a second connection and gives up on a call after 2 seconds, so a frozen application never blocks the other icons. Tooltips and the bar's own menus are not supported yet.
+Without `interactive = true` the icons only show. The tray talks to each application on a second connection and gives up on a call after 2 seconds, so a frozen application never blocks the other icons.
+
+Resting the pointer on an icon for half a second shows the application's **tooltip** (its title in bold, its description below, markup removed; the item's title when it has no tooltip). Leaving the icon or clicking closes it.
 
 Pick another icon with `[tray.icons]`. The key is the item's id or application name, in any case; the value is a glyph name, the text to show, or `""` to hide the item:
 
