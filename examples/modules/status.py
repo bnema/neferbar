@@ -31,7 +31,7 @@ MIXER = ["pavucontrol"]
 NETWORK_SETTINGS = ["nmtui"]  # runs in TERMINAL; impala if you use iwd
 VOLUME_STEP = 2  # percent per wheel step
 TOOLTIP_DELAY = 0.4  # seconds of hover before a tooltip
-REFRESH = 2.0  # seconds between two reads of volume and battery
+REFRESH = 5.0  # seconds between two reads of volume and battery
 WIFI_REFRESH = 10.0
 
 SINK = "@DEFAULT_AUDIO_SINK@"
