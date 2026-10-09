@@ -30,7 +30,8 @@ func newTooltip(title, body string, rows [][]string) *tooltipModel {
 
 // tooltipView draws the title in bold, the body, then the table. The table is
 // laid out column by column, so every column is as wide as its widest cell
-// and the cells of a row line up.
+// and the cells of a row line up, as long as no cell wraps: a cell wider than
+// the tooltip can be takes two lines and shifts the rest of its column.
 func tooltipView(f *nefergui.Frame, m *tooltipModel) {
 	col := f.Root().Column()
 	if m.title != "" {

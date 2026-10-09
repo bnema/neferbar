@@ -114,6 +114,10 @@ func ParseControl(b []byte) (Control, error) {
 		if len(w.Rows) > MaxRows {
 			return Control{}, fmt.Errorf("tooltip: more than %d rows", MaxRows)
 		}
+		if len(w.Rows) > 0 {
+			c.Rows = make([][]string, 0, len(w.Rows))
+		}
+		text := c.Title != "" || c.Body != ""
 		for _, row := range w.Rows {
 			if len(row) > MaxCells {
 				return Control{}, fmt.Errorf("tooltip: more than %d cells in a row", MaxCells)
@@ -121,10 +125,11 @@ func ParseControl(b []byte) (Control, error) {
 			cells := make([]string, len(row))
 			for i, s := range row {
 				cells[i] = clean(s, MaxLabel, false)
+				text = text || cells[i] != ""
 			}
 			c.Rows = append(c.Rows, cells)
 		}
-		if c.Title == "" && c.Body == "" && len(c.Rows) == 0 {
+		if !text {
 			return Control{}, errors.New("tooltip: no text")
 		}
 		return c, nil

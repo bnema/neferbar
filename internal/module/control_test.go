@@ -114,18 +114,34 @@ func TestParseControlCleansText(t *testing.T) {
 }
 
 func TestParseControlTableLimits(t *testing.T) {
-	row := `["a"]`
-	tooMany := `{"type":"tooltip","col":0,"width":1,"rows":[` + strings.TrimSuffix(strings.Repeat(row+",", MaxRows+1), ",") + `]}`
-	if _, err := ParseControl([]byte(tooMany)); err == nil {
-		t.Fatal("too many rows must fail")
+	rows := func(n int) string {
+		return `{"type":"tooltip","col":0,"width":1,"rows":[` + strings.TrimSuffix(strings.Repeat(`["a"],`, n), ",") + `]}`
 	}
-	wide := `{"type":"tooltip","col":0,"width":1,"rows":[[` + strings.TrimSuffix(strings.Repeat(`"a",`, MaxCells+1), ",") + `]]}`
-	if _, err := ParseControl([]byte(wide)); err == nil {
-		t.Fatal("too many cells must fail")
+	cells := func(n int) string {
+		return `{"type":"tooltip","col":0,"width":1,"rows":[[` + strings.TrimSuffix(strings.Repeat(`"a",`, n), ",") + `]]}`
 	}
-	long := `{"type":"tooltip","col":0,"width":1,"rows":[["` + strings.Repeat("a", 2*MaxLabel) + `"]]}`
-	if c, err := ParseControl([]byte(long)); err != nil || len(c.Rows[0][0]) != MaxLabel {
-		t.Fatalf("long cell: %v", err)
+	for name, tc := range map[string]struct {
+		in string
+		ok bool
+	}{
+		"max rows":       {rows(MaxRows), true},
+		"too many rows":  {rows(MaxRows + 1), false},
+		"max cells":      {cells(MaxCells), true},
+		"too many cells": {cells(MaxCells + 1), false},
+		"empty rows":     {`{"type":"tooltip","col":0,"width":1,"rows":[[]]}`, false},
+		"blank cells":    {`{"type":"tooltip","col":0,"width":1,"rows":[["","\u001b"]]}`, false},
+	} {
+		if _, err := ParseControl([]byte(tc.in)); (err == nil) != tc.ok {
+			t.Errorf("%s: err = %v, want ok %v", name, err, tc.ok)
+		}
+	}
+	long := `{"type":"tooltip","col":0,"width":1,"rows":[["` + strings.Repeat("é", MaxLabel) + `"]]}` // 2 bytes each
+	c, err := ParseControl([]byte(long))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cell := c.Rows[0][0]; len(cell) > MaxLabel || len(cell) < MaxLabel-1 || !utf8.ValidString(cell) {
+		t.Fatalf("long cell cut to %d bytes, valid %v", len(cell), utf8.ValidString(cell))
 	}
 }
 
@@ -236,6 +252,7 @@ func FuzzParseControl(f *testing.F) {
 		nested(MaxMenuDepth), nested(MaxMenuDepth + 1),
 		`{"type":"menu","col":0,"width":1,"click":1,"items":[{"id":1,"label":"a\u001b[31m\u202e\ud800"}]}`,
 		`{"type":"tooltip","col":-1,"width":99999999,"title":"x"}`,
+		`{"type":"tooltip","col":0,"width":1,"rows":[["a\n\u001b","\ud800"],[]]}`,
 		`{"type":`, `[]`, `null`, ``, `{"type":"menu","items":null}`,
 	} {
 		f.Add([]byte(s))
@@ -256,6 +273,20 @@ func FuzzParseControl(f *testing.F) {
 		}
 		bad(c.Title, MaxLabel)
 		bad(c.Body, MaxText)
+		if len(c.Rows) > MaxRows {
+			t.Fatalf("%d rows", len(c.Rows))
+		}
+		for _, row := range c.Rows {
+			if len(row) > MaxCells {
+				t.Fatalf("%d cells", len(row))
+			}
+			for _, cell := range row {
+				bad(cell, MaxLabel)
+				if strings.ContainsRune(cell, '\n') {
+					t.Fatalf("cell %q", cell)
+				}
+			}
+		}
 		count := 0
 		var walk func(items []MenuItem, depth int)
 		walk = func(items []MenuItem, depth int) {

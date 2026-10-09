@@ -105,6 +105,7 @@ func (b *Bar) drainControl(m *module.Module) {
 	for i := range b.ctlBuf {
 		b.control(m, b.ctlBuf[i])
 	}
+	clear(b.ctlBuf) // keeps no parsed menu or table alive until the next wake-up
 }
 
 // badControl logs an invalid control line, once per module.

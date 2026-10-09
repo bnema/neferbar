@@ -178,14 +178,15 @@ func TestTooltipTable(t *testing.T) {
 	}
 }
 
-func TestTooltipKeyIncludesRows(t *testing.T) {
+func TestSameTooltipComparesRows(t *testing.T) {
 	a := module.Control{Type: module.ControlTooltip, Width: 1, Rows: [][]string{{"a", "b"}}}
-	b := module.Control{Type: module.ControlTooltip, Width: 1, Rows: [][]string{{"ab"}}}
-	if keyOf(a) == keyOf(b) {
-		t.Fatal("different tables must not share a key")
+	for _, rows := range [][][]string{{{"ab"}}, {{"a"}, {"b"}}, {{"a", "b"}, {}}, nil} {
+		if sameTooltip(a, module.Control{Type: module.ControlTooltip, Width: 1, Rows: rows}) {
+			t.Fatalf("%q is a different table", rows)
+		}
 	}
-	if keyOf(a) != keyOf(module.Control{Type: module.ControlTooltip, Width: 1, Rows: [][]string{{"a", "b"}}}) {
-		t.Fatal("same table, same key")
+	if !sameTooltip(a, module.Control{Type: module.ControlTooltip, Width: 1, Rows: [][]string{{"a", "b"}}}) {
+		t.Fatal("same table, same tooltip")
 	}
 }
 
@@ -303,7 +304,7 @@ func TestShowsTooltip(t *testing.T) {
 	m := &module.Module{}
 	other := &module.Module{}
 	c := module.Control{Type: module.ControlTooltip, Col: 1, Width: 2, Title: "T", Body: "B"}
-	h := &Host{kind: KindTooltip, owner: m, tipKey: keyOf(c)}
+	h := &Host{kind: KindTooltip, owner: m, tipCtl: c}
 	if !h.showsTooltip(m, c) {
 		t.Fatal("the same tooltip of the same owner is shown")
 	}

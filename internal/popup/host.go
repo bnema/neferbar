@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/bnema/neferclient"
@@ -76,7 +76,7 @@ type Host struct {
 	menu   *menuModel
 
 	kind      Kind
-	tipKey    tooltipKey // what the open tooltip shows
+	tipCtl    module.Control // what the open tooltip shows
 	owner     *module.Module
 	ownerGen  uint64
 	anchor    neferclient.Rect
@@ -166,23 +166,11 @@ func (h *Host) waitWarm(kind Kind) (proceed bool) {
 	return true
 }
 
-// tooltipKey is what identifies a tooltip: showing the same one again is
-// pointless.
-type tooltipKey struct {
-	title, body, rows string
-	col, width        int
-}
-
-func keyOf(c module.Control) tooltipKey {
-	var rows strings.Builder
-	for _, r := range c.Rows {
-		for _, s := range r {
-			rows.WriteString(s)
-			rows.WriteByte(0) // cells never hold control characters
-		}
-		rows.WriteByte('\n')
-	}
-	return tooltipKey{c.Title, c.Body, rows.String(), c.Col, c.Width}
+// sameTooltip reports whether two tooltip controls show the same thing:
+// showing the same one again is pointless.
+func sameTooltip(a, b module.Control) bool {
+	return a.Title == b.Title && a.Body == b.Body && a.Col == b.Col && a.Width == b.Width &&
+		slices.EqualFunc(a.Rows, b.Rows, slices.Equal[[]string])
 }
 
 // ShowsTooltip reports whether the open popup is a tooltip of owner that shows
@@ -192,7 +180,7 @@ func (h *Host) ShowsTooltip(owner *module.Module, c module.Control) bool {
 }
 
 func (h *Host) showsTooltip(owner *module.Module, c module.Control) bool {
-	return h.kind == KindTooltip && h.owner == owner && h.tipKey == keyOf(c)
+	return h.kind == KindTooltip && h.owner == owner && sameTooltip(h.tipCtl, c)
 }
 
 // Active reports whether a popup is open.
@@ -276,7 +264,7 @@ func (h *Host) Open(req Request) error {
 		return fmt.Errorf("popup: %w", err)
 	}
 	h.r, h.kind = r, req.Kind
-	h.tipKey = keyOf(req.Ctrl)
+	h.tipCtl = req.Ctrl
 	switch req.Kind {
 	case KindTooltip:
 		h.tip = newTooltip(req.Ctrl.Title, req.Ctrl.Body, req.Ctrl.Rows)
