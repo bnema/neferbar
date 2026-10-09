@@ -23,6 +23,7 @@ import re
 import select
 import shutil
 import subprocess
+import sys
 import time
 
 TERMINAL = os.environ.get("TERMINAL", "kitty")
@@ -54,6 +55,19 @@ def run(*cmd):
         return subprocess.run(cmd, capture_output=True, text=True, timeout=3).stdout
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+def act(*cmd):
+    """Run an action the user asked for. A failure goes to stderr, which the
+    bar writes to its log."""
+    try:
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as err:
+        print(f"{cmd[0]}: {err}", file=sys.stderr, flush=True)
+        return False
+    if done.returncode != 0:
+        print(f"{' '.join(cmd)}: {done.stderr.strip()}", file=sys.stderr, flush=True)
+    return done.returncode == 0
 
 
 def launch(*cmd):
@@ -141,10 +155,10 @@ class Volume:
         run("wpctl", "set-volume", "-l", "1.0", SINK, f"{steps * VOLUME_STEP}%{sign}")
 
     def mute(self):
-        run("wpctl", "set-mute", SINK, "toggle")
+        act("wpctl", "set-mute", SINK, "toggle")
 
     def set(self, percent):
-        run("wpctl", "set-volume", SINK, f"{percent}%")
+        act("wpctl", "set-volume", SINK, f"{percent}%")
 
 
 # --- wifi --------------------------------------------------------------------
@@ -210,11 +224,11 @@ class Wifi:
         pass
 
     def toggle(self):
-        run("nmcli", "radio", "wifi", "off" if self.enabled else "on")
+        act("nmcli", "radio", "wifi", "off" if self.enabled else "on")
 
     def connect(self, ssid):
         # Uses the saved profile; a new secured network needs the settings TUI.
-        if not run("nmcli", "device", "wifi", "connect", ssid):
+        if not act("nmcli", "device", "wifi", "connect", ssid):
             self.settings()
 
     def settings(self):
@@ -277,7 +291,9 @@ class Battery:
     def menu(self):
         current = run("powerprofilesctl", "get").strip()
         profiles = re.findall(r"^\*?\s*([\w-]+):$", run("powerprofilesctl", "list"), re.M)
-        return [(p, "radio", p == current, lambda p=p: run("powerprofilesctl", "set", p))
+        # Switching profiles needs an active session (polkit): run the bar
+        # from the compositor, not from an ssh shell.
+        return [(p, "radio", p == current, lambda p=p: act("powerprofilesctl", "set", p))
                 for p in profiles]
 
     def click(self, button):
