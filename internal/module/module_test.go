@@ -227,6 +227,48 @@ func TestSendAllocs(t *testing.T) {
 	}
 }
 
+// A script that never reads its stdin blocks the writer once the pipe is
+// full; stop must still return, because closing the pipe ends the Write.
+func TestPumpInputStopUnblocksAWrite(t *testing.T) {
+	r, w, err := os.Pipe() // r is never read
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	m, _ := newTest()
+	m.Interactive = true
+	stop := m.pumpInput(w)
+
+	// Push well over the 64 KiB a pipe holds, until the queue stays full: then
+	// the writer is stuck in Write.
+	line := []byte(strings.Repeat("x", 100))
+	sent := 0
+	deadline := time.Now().Add(5 * time.Second)
+	for full := 0; full < 50; {
+		if time.Now().After(deadline) {
+			t.Fatalf("the writer never blocked after %d lines", sent)
+		}
+		if m.Send(line) {
+			sent++
+			full = 0
+		} else {
+			full++
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if sent*101 <= 64<<10 {
+		t.Fatalf("only %d bytes went in; the pipe was not full", sent*101)
+	}
+
+	done := make(chan struct{})
+	go func() { stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("stop did not return: the blocked Write was not released")
+	}
+}
+
 func TestGenCountsStarts(t *testing.T) {
 	wake := make(chan struct{}, 1)
 	m := New("t", Left, "printf 'hi\\n'", wake, slog.New(slog.DiscardHandler))
