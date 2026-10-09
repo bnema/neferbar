@@ -3,9 +3,11 @@ package tray
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -60,12 +62,20 @@ type fakeItem struct {
 	cur    [3]string // id, icon name, status
 	pixel  [4]byte   // the one ARGB pixel of its icon
 	closed chan struct{}
+
+	// calls records the StatusNotifierItem actions it received, as
+	// "Method(args)". The fields below are set through run.
+	calls   chan string
+	unknown string        // the method it answers with UnknownMethod
+	slow    string        // the method it answers only after slowFor
+	slowFor time.Duration // how long slow takes
 }
 
 func newFakeItem(t *testing.T, addr, id, iconName string, pixel [4]byte) *fakeItem {
 	c := dial(t, addr)
 	f := &fakeItem{c: c, name: c.UniqueName(), driver: dial(t, addr), cmds: make(chan func(), 1),
-		cur: [3]string{id, iconName, "Active"}, pixel: pixel, closed: make(chan struct{})}
+		cur: [3]string{id, iconName, "Active"}, pixel: pixel, closed: make(chan struct{}),
+		calls: make(chan string, 32)}
 	go f.serve()
 	return f
 }
@@ -96,6 +106,12 @@ func (f *fakeItem) serve() {
 			(<-f.cmds)()
 			continue
 		}
+		if m.Type == zerobus.TypeMethodCall && m.Interface == itemIface {
+			if !f.action(m) {
+				return
+			}
+			continue
+		}
 		if m.Type != zerobus.TypeMethodCall || m.Member != "GetAll" {
 			continue
 		}
@@ -121,6 +137,34 @@ func (f *fakeItem) serve() {
 			return
 		}
 	}
+}
+
+// action records and answers one StatusNotifierItem method call. It reports
+// false when the connection is gone.
+func (f *fakeItem) action(m *zerobus.Message) bool {
+	r := m.Body()
+	var rec string
+	switch m.Member {
+	case "Activate", "SecondaryActivate", "ContextMenu":
+		x, y := r.Int32(), r.Int32()
+		rec = fmt.Sprintf("%s(%d,%d)", m.Member, x, y)
+	case "Scroll":
+		delta, orientation := r.Int32(), r.Str()
+		rec = fmt.Sprintf("Scroll(%d,%s)", delta, orientation)
+	default:
+		return true
+	}
+	f.calls <- rec
+	if m.Member == f.slow {
+		time.Sleep(f.slowFor)
+	}
+	if m.Member == f.unknown {
+		f.c.NewError(m, "org.freedesktop.DBus.Error.UnknownMethod", "s").Str("no such method")
+	} else {
+		f.c.NewReply(m, "")
+	}
+	_, err := f.c.Send()
+	return err == nil
 }
 
 // register registers the item with the watcher, by bus name.
@@ -185,6 +229,12 @@ func (l *lines) waitFor(t *testing.T, what string, ok func(string) bool) string 
 // startTray runs a tray on the bus. Cancel it and receive from the channel
 // to stop it; the test cleanup does both when the test did not.
 func startTray(t *testing.T, addr string) (*lines, context.CancelFunc, <-chan error) {
+	return startTrayWith(t, addr, nil, nil)
+}
+
+// startTrayWith is startTray with the bar's input and a dialer for the
+// control connection.
+func startTrayWith(t *testing.T, addr string, in io.Reader, dialer func() (*zerobus.Conn, error)) (*lines, context.CancelFunc, <-chan error) {
 	pr, pw := io.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -193,7 +243,7 @@ func startTray(t *testing.T, addr string) (*lines, context.CancelFunc, <-chan er
 	opt := Options{
 		Resolver:   NewResolver(lookup, nil, []string{t.TempDir()}),
 		Foreground: RGB{200, 200, 200}, Background: RGB{30, 30, 46}, Accent: RGB{137, 180, 250},
-		Out: pw,
+		Out: pw, In: in, Dial: dialer,
 	}
 	c := dial(t, addr)
 	go func() {
@@ -538,5 +588,65 @@ func TestBetterPixmapSize(t *testing.T) {
 		if best != c.want {
 			t.Errorf("%v: chose %d, want %d", c.sizes, best, c.want)
 		}
+	}
+}
+
+func TestRenderPublishesTargets(t *testing.T) {
+	var buf strings.Builder
+	tr := &Tray{opt: Options{Out: &buf, Foreground: RGB{1, 2, 3}}}
+	tr.items = []*item{
+		{loaded: true, icon: "S", dest: ":1.1", owner: ":1.1", path: "/a", menu: "/ma"},
+		{loaded: true, icon: "Z", status: passive, dest: ":1.9", path: "/z"},
+		{loaded: true, icon: "☀", dest: "org.x.Sun", owner: ":1.2", path: "/b", isMenu: true},
+	}
+	if err := tr.render(false); err != nil {
+		t.Fatal(err)
+	}
+	want := []Target{
+		{Dest: ":1.1", Path: "/a", Menu: "/ma", Start: 0, Width: 1},
+		{Dest: ":1.2", Path: "/b", IsMenu: true, Start: 2, Width: 1},
+	}
+	if got := tr.snap.targets; !slices.Equal(got, want) {
+		t.Fatalf("targets = %+v, want %+v", got, want)
+	}
+	for col, wantPath := range map[int]string{0: "/a", 2: "/b"} {
+		if tg, ok := tr.target(col); !ok || tg.Path != wantPath {
+			t.Errorf("target(%d) = %+v, %v; want %s", col, tg, ok, wantPath)
+		}
+	}
+	for _, col := range []int{-1, 1, 3} {
+		if _, ok := tr.target(col); ok {
+			t.Errorf("target(%d) found an icon in the gap or past the line", col)
+		}
+	}
+	// A hidden item leaves no target, and a wide icon moves the next one.
+	tr.items[0].icon = "界"
+	if err := tr.render(false); err != nil {
+		t.Fatal(err)
+	}
+	if got := tr.snap.targets; len(got) != 2 || got[0].Width != 2 || got[1].Start != 3 {
+		t.Fatalf("targets after a wide icon = %+v", got)
+	}
+}
+
+// A change of menu path alone republishes the targets without a new line.
+func TestRenderRepublishesTargetsWithoutNewLine(t *testing.T) {
+	var buf strings.Builder
+	tr := &Tray{opt: Options{Out: &buf}}
+	tr.items = []*item{{loaded: true, icon: "S", dest: ":1.1", path: "/a"}}
+	for range 2 {
+		if err := tr.render(false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tr.items[0].menu = "/menu"
+	if err := tr.render(false); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(buf.String(), "\n"); n != 1 {
+		t.Fatalf("%d lines written, want 1", n)
+	}
+	if tg, _ := tr.target(0); tg.Menu != "/menu" {
+		t.Fatalf("target = %+v", tg)
 	}
 }

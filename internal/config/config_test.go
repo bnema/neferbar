@@ -84,3 +84,13 @@ func TestPositionDefaultsToTop(t *testing.T) {
 		}
 	}
 }
+
+func TestInteractiveKey(t *testing.T) {
+	c, err := Load(write(t, "[[module]]\nzone = \"left\"\nexec = \"a\"\ninteractive = true\n[[module]]\nzone = \"left\"\nexec = \"b\"\n"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Module[0].Interactive || c.Module[1].Interactive {
+		t.Fatalf("interactive = %v, %v; want true, false", c.Module[0].Interactive, c.Module[1].Interactive)
+	}
+}

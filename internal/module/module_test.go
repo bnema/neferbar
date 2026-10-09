@@ -131,3 +131,163 @@ func TestScriptDir(t *testing.T) {
 		}
 	}
 }
+
+func TestSendReachesTheScript(t *testing.T) {
+	wake := make(chan struct{}, 1)
+	m := New("t", Left, `while read l; do printf '%s\n' "$l"; done`, wake, slog.New(slog.DiscardHandler))
+	m.Interactive = true
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	m.Start(ctx)
+	defer m.Wait(5 * time.Second)
+	defer cancel()
+	deadline := time.After(5 * time.Second)
+	for {
+		// The script may start after the first Send: resend until it answers.
+		m.Send([]byte("hover 3"))
+		select {
+		case <-wake:
+			if b, ch, failed := m.Take(nil); ch && !failed && string(b) == "hover 3" {
+				return
+			}
+		case <-time.After(50 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("the script never echoed the line")
+		}
+	}
+}
+
+func TestSendRefusals(t *testing.T) {
+	m, _ := newTest()
+	if m.Send([]byte("hover 1")) {
+		t.Fatal("a non-interactive module must refuse Send")
+	}
+	m.Interactive = true
+	if m.Send(make([]byte, 128)) {
+		t.Fatal("a line over 127 bytes must be refused")
+	}
+	if !m.Send(make([]byte, 127)) {
+		t.Fatal("a 127-byte line must be accepted")
+	}
+}
+
+func TestSendNeverBlocks(t *testing.T) {
+	m, _ := newTest()
+	m.Interactive = true
+	done := make(chan int)
+	go func() {
+		ok := 0
+		for i := 0; i < 33; i++ {
+			if m.Send([]byte("hover 1")) {
+				ok++
+			}
+		}
+		done <- ok
+	}()
+	select {
+	case ok := <-done:
+		if ok != 32 {
+			t.Fatalf("%d sends accepted, want 32 (the queue size)", ok)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Send blocked on a full queue")
+	}
+}
+
+// A script that never reads its stdin must not hold the module back.
+func TestUnreadStdinDoesNotBlockStop(t *testing.T) {
+	m := New("t", Left, "echo up; sleep 30", make(chan struct{}, 1), slog.New(slog.DiscardHandler))
+	m.Interactive = true
+	ctx, cancel := context.WithCancel(context.Background())
+	m.Start(ctx)
+	for i := 0; i < 40; i++ {
+		m.Send([]byte(strings.Repeat("x", 100)))
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	start := time.Now()
+	m.Wait(5 * time.Second)
+	if time.Since(start) > 4*time.Second {
+		t.Fatal("stopping took too long")
+	}
+}
+
+func TestSendAllocs(t *testing.T) {
+	if racecheck.Enabled {
+		t.Skip("the race detector allocates")
+	}
+	m, _ := newTest()
+	m.Interactive = true
+	line := []byte("hover 12")
+	if got := testing.AllocsPerRun(100, func() {
+		m.Send(line)
+		<-m.input
+	}); got > 0 {
+		t.Errorf("Send allocates %.1f objects; want 0", got)
+	}
+}
+
+// A script that never reads its stdin blocks the writer once the pipe is
+// full; stop must still return, because closing the pipe ends the Write.
+func TestPumpInputStopUnblocksAWrite(t *testing.T) {
+	r, w, err := os.Pipe() // r is never read
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	m, _ := newTest()
+	m.Interactive = true
+	stop := m.pumpInput(w)
+
+	// Push well over the 64 KiB a pipe holds, until the queue stays full: then
+	// the writer is stuck in Write.
+	line := []byte(strings.Repeat("x", 100))
+	sent := 0
+	deadline := time.Now().Add(5 * time.Second)
+	for full := 0; full < 50; {
+		if time.Now().After(deadline) {
+			t.Fatalf("the writer never blocked after %d lines", sent)
+		}
+		if m.Send(line) {
+			sent++
+			full = 0
+		} else {
+			full++
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if sent*101 <= 64<<10 {
+		t.Fatalf("only %d bytes went in; the pipe was not full", sent*101)
+	}
+
+	done := make(chan struct{})
+	go func() { stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("stop did not return: the blocked Write was not released")
+	}
+}
+
+func TestGenCountsStarts(t *testing.T) {
+	wake := make(chan struct{}, 1)
+	m := New("t", Left, "printf 'hi\\n'", wake, slog.New(slog.DiscardHandler))
+	if m.Gen() != 0 {
+		t.Fatalf("Gen before start = %d", m.Gen())
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go m.Run(ctx)
+	deadline := time.After(4 * time.Second)
+	for m.Gen() < 2 { // the script exits at once and is restarted
+		select {
+		case <-wake:
+		case <-time.After(20 * time.Millisecond):
+		case <-deadline:
+			t.Fatalf("Gen = %d, want at least 2 after a restart", m.Gen())
+		}
+	}
+	if allocs := testing.AllocsPerRun(100, func() { m.Gen() }); allocs != 0 {
+		t.Errorf("Gen allocates %v", allocs)
+	}
+}

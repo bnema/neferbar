@@ -221,3 +221,153 @@ func TestCenterMovesOnlyAsFarAsNeeded(t *testing.T) {
 		t.Fatalf("center starts at cell %d, want 16 (ending where the right zone starts): %q", i, got)
 	}
 }
+
+func spanOf(spans []Span, m *module.Module) (Span, bool) {
+	for _, s := range spans {
+		if s.M == m {
+			return s, true
+		}
+	}
+	return Span{}, false
+}
+
+func TestSpansPerZone(t *testing.T) {
+	l, m := newTestLayout(20)
+	publish(m[0], "LEFT")
+	publish(m[1], "mid")
+	publish(m[2], "RIGHT")
+	l.Update()
+	row := rowText(l)
+	spans := l.Spans(nil)
+	if len(spans) != 3 {
+		t.Fatalf("spans = %+v, want 3", spans)
+	}
+	for i, want := range []string{"LEFT", "mid", "RIGHT"} {
+		s, ok := spanOf(spans, m[i])
+		if !ok || s.Width != len(want) || row[s.Start:s.Start+s.Width] != want {
+			t.Errorf("span %d = %+v (ok %v) in %q, want %q", i, s, ok, row, want)
+		}
+	}
+	// Spans come in module order.
+	if spans[0].M != m[0] || spans[1].M != m[1] || spans[2].M != m[2] {
+		t.Errorf("spans out of order: %+v", spans)
+	}
+}
+
+func TestSpansTwoModulesInOneZone(t *testing.T) {
+	wake := make(chan struct{}, 1)
+	log := slog.New(slog.DiscardHandler)
+	a := module.New("a", module.Left, "true", wake, log)
+	b := module.New("b", module.Left, "true", wake, log)
+	l := New(10, [3]uint8{1, 1, 1}, [3]uint8{2, 2, 2}, testPalette, []*module.Module{a, b})
+	publish(a, "AA")
+	publish(b, "BBB")
+	l.Update()
+	l.Compose()
+	sa, _ := spanOf(l.Spans(nil), a)
+	sb, _ := spanOf(l.Spans(nil), b)
+	if sa != (Span{a, 0, 2}) || sb != (Span{b, 2, 3}) {
+		t.Fatalf("spans = %+v %+v", sa, sb)
+	}
+	for col, want := range map[int]struct {
+		m   *module.Module
+		off int
+		ok  bool
+	}{0: {a, 0, true}, 1: {a, 1, true}, 2: {b, 0, true}, 4: {b, 2, true}, 5: {nil, 0, false}, -1: {nil, 0, false}, 99: {nil, 0, false}} {
+		gm, off, ok := l.At(col)
+		if gm != want.m || off != want.off || ok != want.ok {
+			t.Errorf("At(%d) = %v, %d, %v; want %v, %d, %v", col, gm, off, ok, want.m, want.off, want.ok)
+		}
+	}
+}
+
+func TestSpansAreClipped(t *testing.T) {
+	// The right zone wins over the left one: left is cut to the room left.
+	l, m := newTestLayout(8)
+	publish(m[0], "AAAAA")
+	publish(m[2], "ZZZZZ")
+	l.Update()
+	l.Compose()
+	spans := l.Spans(nil)
+	if s, ok := spanOf(spans, m[0]); !ok || s != (Span{m[0], 0, 3}) {
+		t.Errorf("left span = %+v, want {0,3}", s)
+	}
+	if s, ok := spanOf(spans, m[2]); !ok || s != (Span{m[2], 3, 5}) {
+		t.Errorf("right span = %+v, want {3,5}", s)
+	}
+	if _, _, ok := l.At(3); !ok {
+		t.Error("column 3 belongs to the right module")
+	}
+	if gm, off, _ := l.At(3); gm != m[2] || off != 0 {
+		t.Errorf("At(3) = %v, %d", gm, off)
+	}
+
+	// The center is cut first, and may vanish entirely.
+	l, m = newTestLayout(12)
+	publish(m[0], "AAAAA")
+	publish(m[1], "CCCCCCCC")
+	publish(m[2], "ZZZZZ")
+	l.Update()
+	l.Compose()
+	if s, ok := spanOf(l.Spans(nil), m[1]); !ok || s != (Span{m[1], 5, 2}) {
+		t.Errorf("center span = %+v (ok %v), want {5,2}", s, ok)
+	}
+	l, m = newTestLayout(10)
+	publish(m[0], "AAAAA")
+	publish(m[1], "CC")
+	publish(m[2], "ZZZZZ")
+	l.Update()
+	l.Compose()
+	if _, ok := spanOf(l.Spans(nil), m[1]); ok {
+		t.Error("a fully clipped module must have no span")
+	}
+	if _, _, ok := l.At(5); !ok {
+		// column 5 is the first of the right zone
+		t.Error("At(5) must find the right module")
+	}
+}
+
+func TestSpansEmptyModuleAndRecompose(t *testing.T) {
+	l, m := newTestLayout(10)
+	publish(m[0], "")
+	publish(m[2], "R")
+	l.Update()
+	l.Compose()
+	if _, ok := spanOf(l.Spans(nil), m[0]); ok {
+		t.Error("an empty module has no span")
+	}
+	if len(l.Spans(nil)) != 1 {
+		t.Errorf("spans = %+v", l.Spans(nil))
+	}
+	// A module that empties out loses its span at the next Compose.
+	publish(m[2], "")
+	l.Update()
+	l.Compose()
+	if got := l.Spans(nil); len(got) != 0 {
+		t.Errorf("spans after emptying = %+v", got)
+	}
+	if _, _, ok := l.At(9); ok {
+		t.Error("At must not find an emptied module")
+	}
+}
+
+func TestComposeAndSpansAllocs(t *testing.T) {
+	if racecheck.Enabled {
+		t.Skip("the race detector allocates")
+	}
+	l, m := newTestLayout(40)
+	publish(m[0], "left")
+	publish(m[1], "center")
+	publish(m[2], "right")
+	l.Update()
+	if got := testing.AllocsPerRun(100, func() { l.Compose() }); got > 0 {
+		t.Errorf("Compose allocates %.1f objects; want 0", got)
+	}
+	buf := make([]Span, 0, 8)
+	if got := testing.AllocsPerRun(100, func() { buf = l.Spans(buf[:0]) }); got > 0 {
+		t.Errorf("Spans allocates %.1f objects; want 0", got)
+	}
+	if got := testing.AllocsPerRun(100, func() { l.At(3) }); got > 0 {
+		t.Errorf("At allocates %.1f objects; want 0", got)
+	}
+}

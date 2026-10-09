@@ -28,7 +28,13 @@ jobs:
           persist-credentials: false
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - run: |
-          go install honnef.co/go/tools/cmd/staticcheck@latest
+          # Build staticcheck against the latest x/tools so it can read the
+          # export data of the Go release installed above.
+          cd "$(mktemp -d)"
+          go mod init tools
+          go get -tool honnef.co/go/tools/cmd/staticcheck@latest
+          go get golang.org/x/tools@latest
+          go install tool
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: make check
       - run: make race

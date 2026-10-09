@@ -73,6 +73,8 @@ func runTray(ctx context.Context, args []string) error {
 		Resolver: tray.NewResolver(names.Lookup, cfg.Tray.Icons, nil),
 		Out:      os.Stdout,
 		Log:      log,
+		In:       os.Stdin,
+		Dial:     zerobus.SessionBus,
 	}
 	opt.Foreground, opt.Background, opt.Accent = trayColors(log)
 
