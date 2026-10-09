@@ -1,10 +1,19 @@
 package module
 
 import (
+	"bytes"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 )
+
+// newInteractive is newTest for a module that may send control lines.
+func newInteractive() (*Module, chan struct{}) {
+	m, wake := newTest()
+	m.Interactive = true
+	return m, wake
+}
 
 func TestParseControlValid(t *testing.T) {
 	c, err := ParseControl([]byte(`{"type":"tooltip","col":2,"width":1,"title":"Steam","body":"line1\nline2"}`))
@@ -99,7 +108,7 @@ func TestParseControlCleansText(t *testing.T) {
 }
 
 func TestControlLineBetweenFramesLeavesBothIntact(t *testing.T) {
-	m, _ := newTest()
+	m, _ := newInteractive()
 	m.readFrames(strings.NewReader("one\n\x1b]777;neferbar;{\"type\":\"close\"}\x07\ntwo\n"))
 	got, changed, _ := m.Take(nil)
 	if !changed || string(got) != "two" {
@@ -114,7 +123,7 @@ func TestControlLineBetweenFramesLeavesBothIntact(t *testing.T) {
 	}
 
 	// The control line alone never becomes a frame.
-	m, _ = newTest()
+	m, _ = newInteractive()
 	m.readFrames(strings.NewReader("one\n"))
 	m.Take(nil)
 	m.readFrames(strings.NewReader("\x1b]777;neferbar;{\"type\":\"close\"}\x07\n"))
@@ -124,7 +133,7 @@ func TestControlLineBetweenFramesLeavesBothIntact(t *testing.T) {
 }
 
 func TestUnterminatedControlIsAFrame(t *testing.T) {
-	m, _ := newTest()
+	m, _ := newInteractive()
 	m.readFrames(strings.NewReader("\x1b]777;neferbar;{bad\n"))
 	if _, ok := m.TakeControl(); ok {
 		t.Fatal("a line without BEL is not a control line")
@@ -136,7 +145,7 @@ func TestUnterminatedControlIsAFrame(t *testing.T) {
 }
 
 func TestOversizeControlIsDropped(t *testing.T) {
-	m, _ := newTest()
+	m, _ := newInteractive()
 	m.readFrames(strings.NewReader("a\n\x1b]777;neferbar;" + strings.Repeat("x", MaxControl) + "\x07\nb\n"))
 	if _, ok := m.TakeControl(); ok {
 		t.Fatal("an oversize control line must be dropped")
@@ -147,7 +156,7 @@ func TestOversizeControlIsDropped(t *testing.T) {
 }
 
 func TestControlQueueDropsWhenFull(t *testing.T) {
-	m, wake := newTest()
+	m, wake := newInteractive()
 	var in strings.Builder
 	for range 20 {
 		in.WriteString("\x1b]777;neferbar;{\"type\":\"close\"}\x07\n")
@@ -162,5 +171,37 @@ func TestControlQueueDropsWhenFull(t *testing.T) {
 	}
 	if n != 8 || len(wake) != 1 {
 		t.Fatalf("queued %d (want 8), wake %d", n, len(wake))
+	}
+}
+
+func TestControlLinesOfANonInteractiveModuleAreDropped(t *testing.T) {
+	m, wake := newTest()
+	m.readFrames(strings.NewReader("one\n\x1b]777;neferbar;{\"type\":\"close\"}\x07\ntwo\n"))
+	if _, ok := m.TakeControl(); ok {
+		t.Fatal("a non-interactive module queued a control line")
+	}
+	if got, _, _ := m.Take(nil); string(got) != "two" {
+		t.Fatalf("frame = %q, want two (the control line is still not a frame)", got)
+	}
+	if len(wake) != 1 { // from the frames only
+		t.Fatalf("wake = %d", len(wake))
+	}
+}
+
+func TestOversizeControlWarnsOncePerRun(t *testing.T) {
+	var logs bytes.Buffer
+	m, _ := newInteractive()
+	m.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	big := "\x1b]777;neferbar;" + strings.Repeat("x", MaxControl) + "\x07\n"
+	m.readFrames(strings.NewReader(big + big + big))
+	warns := func() int { return strings.Count(logs.String(), "level=WARN") }
+	if warns() != 1 || strings.Count(logs.String(), "level=DEBUG") != 2 {
+		t.Fatalf("want 1 warning and 2 debug lines:\n%s", logs.String())
+	}
+	// A new run of the script warns again; runOnce resets the flag.
+	m.overLogged = false
+	m.readFrames(strings.NewReader(big))
+	if warns() != 2 {
+		t.Fatalf("a new run must warn again:\n%s", logs.String())
 	}
 }

@@ -63,6 +63,10 @@ type Module struct {
 	control chan []byte   // control lines of the script, see TakeControl
 	gen     atomic.Uint64 // counts script starts; see Gen
 
+	// overLogged: an oversize control line was already logged at Warn in this
+	// run of the script. Touched by runOnce and readFrames, which never overlap.
+	overLogged bool
+
 	wake chan<- struct{}
 	log  *slog.Logger
 
@@ -193,6 +197,7 @@ func (m *Module) Run(ctx context.Context) {
 
 func (m *Module) runOnce(ctx context.Context) error {
 	m.gen.Add(1)
+	m.overLogged = false // readFrames of the previous run has ended
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", m.Exec)
 	cmd.Stderr = &logWriter{log: m.log, name: m.Name}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGTERM}
@@ -284,9 +289,13 @@ func (m *Module) TakeControl() ([]byte, bool) {
 	}
 }
 
-// queueControl keeps a copy of the JSON of a control line. A full queue drops
-// the line: the bar is not draining it.
+// queueControl keeps a copy of the JSON of a control line of an interactive
+// module. A full queue drops the
+// line: the bar is not draining it.
 func (m *Module) queueControl(json []byte) {
+	if !m.Interactive {
+		return // only interactive modules open popups: do not keep or parse the line
+	}
 	select {
 	case m.control <- append([]byte(nil), json...):
 		m.signal()
@@ -300,7 +309,13 @@ func (m *Module) line(line []byte, over bool) {
 	if bytes.HasPrefix(line, []byte(controlPrefix)) {
 		switch {
 		case over:
-			m.log.Warn("module control line too long; dropped", "module", m.Name, "max", MaxControl)
+			// A script can repeat this at will: say it once per run.
+			if !m.overLogged {
+				m.overLogged = true
+				m.log.Warn("module control line too long; dropped (shown once per run)", "module", m.Name, "max", MaxControl)
+			} else {
+				m.log.Debug("module control line too long; dropped", "module", m.Name, "max", MaxControl)
+			}
 			return
 		case len(line) > 0 && line[len(line)-1] == controlEnd:
 			m.queueControl(line[len(controlPrefix) : len(line)-1])
