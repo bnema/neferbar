@@ -1,0 +1,229 @@
+package bar
+
+import (
+	"math"
+	"slices"
+	"strconv"
+	"time"
+
+	"github.com/bnema/neferclient"
+
+	"github.com/bnema/neferbar/internal/layout"
+	"github.com/bnema/neferbar/internal/module"
+)
+
+// Evdev button codes.
+const (
+	btnLeft   = 0x110
+	btnRight  = 0x111
+	btnMiddle = 0x112
+)
+
+// pxPerStep is how far a continuous scroll (touchpad) moves for one step.
+const pxPerStep = 15
+
+// press is the latest button press sent to a module.
+type press struct {
+	token  uint32 // the number the module echoes to refer to this press
+	serial uint32 // the pointer serial of the press, for popup grabs
+	at     time.Time
+}
+
+// pointerState turns pointer events over the bar into the lines of the module
+// protocol. It owns no Wayland object: the bar loop feeds it columns.
+type pointerState struct {
+	hover    *module.Module // the interactive module under the pointer
+	hoverOff int            // its cell column
+	token    uint32         // last click token
+	press    press
+	wheel    wheelAcc
+	buf      [64]byte // the line being built
+}
+
+// send hands a line built in p.buf to m. A full queue drops the line: the
+// script is not reading and pointer events are not worth waiting for.
+func (p *pointerState) send(m *module.Module, line []byte) { m.Send(line) }
+
+// line starts a line in p.buf.
+func (p *pointerState) line(verb string) []byte { return append(p.buf[:0], verb...) }
+
+func appendInt(b []byte, v int) []byte {
+	b = append(b, ' ')
+	return strconv.AppendInt(b, int64(v), 10)
+}
+
+// motion handles Enter and Motion at cell column col of the bar row.
+func (p *pointerState) motion(lay *layout.Layout, col int) {
+	m, off := interactiveAt(lay, col)
+	if m == p.hover && (m == nil || off == p.hoverOff) {
+		return
+	}
+	if p.hover != nil && m != p.hover {
+		p.send(p.hover, p.line("leave"))
+	}
+	p.hover, p.hoverOff = m, off
+	if m != nil {
+		p.send(m, appendInt(p.line("hover"), off))
+	}
+}
+
+// leave handles the pointer leaving the bar.
+func (p *pointerState) leave() {
+	if p.hover != nil {
+		p.send(p.hover, p.line("leave"))
+	}
+	p.hover, p.hoverOff = nil, 0
+	p.wheel.reset()
+}
+
+// button handles a button press at column col. serial is the press serial.
+func (p *pointerState) button(lay *layout.Layout, col int, code uint32, serial uint32) {
+	var name string
+	switch code {
+	case btnLeft:
+		name = "left"
+	case btnMiddle:
+		name = "middle"
+	case btnRight:
+		name = "right"
+	default:
+		return
+	}
+	m, off := interactiveAt(lay, col)
+	if m == nil {
+		return
+	}
+	p.token++
+	p.press = press{token: p.token, serial: serial, at: time.Now()}
+	b := append(p.line("click "), name...)
+	b = appendInt(b, off)
+	b = append(b, ' ')
+	b = strconv.AppendUint(b, uint64(p.token), 10)
+	p.send(m, b)
+}
+
+// axis handles one scroll event at column col.
+func (p *pointerState) axis(lay *layout.Layout, col int, axis uint32, value120 int32, delta float64) {
+	steps := p.wheel.add(axis, value120, delta)
+	if steps == 0 {
+		return
+	}
+	m, off := interactiveAt(lay, col)
+	if m == nil {
+		return
+	}
+	var dir string
+	switch {
+	case axis == neferclient.AxisVertical && steps > 0:
+		dir = "down"
+	case axis == neferclient.AxisVertical:
+		dir = "up"
+	case steps > 0:
+		dir = "right"
+	default:
+		dir = "left"
+	}
+	if steps < 0 {
+		steps = -steps
+	}
+	b := append(p.line("scroll "), dir...)
+	b = appendInt(b, int(steps))
+	b = appendInt(b, off)
+	p.send(m, b)
+}
+
+// interactiveAt is the interactive module at column col, and the column inside it.
+func interactiveAt(lay *layout.Layout, col int) (*module.Module, int) {
+	m, off, ok := lay.At(col)
+	if !ok || !m.Interactive {
+		return nil, 0
+	}
+	return m, off
+}
+
+// wheelAcc counts scroll steps. A wheel reports notches in 1/120 units; a
+// touchpad reports pixels. A compositor may send both for a wheel, so once a
+// 1/120 value was seen the pixels are ignored until the pointer leaves.
+type wheelAcc struct {
+	wheel bool
+	v120  [2]int32
+	px    [2]float64
+}
+
+func (a *wheelAcc) reset() { *a = wheelAcc{} }
+
+// add accumulates one event and returns the whole steps it completed:
+// positive for down or right, negative for up or left.
+func (a *wheelAcc) add(axis uint32, value120 int32, delta float64) int32 {
+	if axis > 1 {
+		return 0
+	}
+	if value120 != 0 {
+		a.wheel = true
+		a.v120[axis] += value120
+		steps := a.v120[axis] / 120
+		a.v120[axis] -= steps * 120
+		return steps
+	}
+	if a.wheel {
+		return 0
+	}
+	a.px[axis] += delta
+	steps := int32(a.px[axis] / pxPerStep)
+	a.px[axis] -= float64(steps) * pxPerStep
+	return steps
+}
+
+// inputRect is the logical-pixel rectangle of a span of cells: rounded
+// outward, full surface height.
+func inputRect(start, width, cellW int, scale float64, height int32) neferclient.Rect {
+	const eps = 1e-9
+	x0 := int32(math.Floor(float64(start)*float64(cellW)/scale + eps))
+	x1 := int32(math.Ceil(float64(start+width)*float64(cellW)/scale - eps))
+	return neferclient.Rect{X: x0, Y: 0, Width: x1 - x0, Height: height}
+}
+
+// inputKey is everything but the spans that the input rectangles depend on.
+type inputKey struct {
+	cellW  int
+	scale  float64
+	height int32
+}
+
+// inputRegion tracks the spans the compositor was last told about.
+type inputRegion struct {
+	spans, last []layout.Span
+	rects       []neferclient.Rect
+	key         inputKey
+}
+
+// reset forgets what the compositor knows: a new surface starts click-through.
+func (r *inputRegion) reset() {
+	r.last = r.last[:0]
+	r.key = inputKey{}
+}
+
+// update collects the spans of the interactive modules and reports whether the
+// input rectangles differ from the last ones; if so rects holds the new ones
+// (non-nil, possibly empty). It allocates only while the slices grow.
+func (r *inputRegion) update(lay *layout.Layout, key inputKey) (rects []neferclient.Rect, changed bool) {
+	r.spans = lay.Spans(r.spans[:0])
+	r.spans = slices.DeleteFunc(r.spans, func(s layout.Span) bool { return !s.M.Interactive })
+	if key == r.key && slices.Equal(r.spans, r.last) {
+		return nil, false
+	}
+	if len(r.spans) == 0 && len(r.last) == 0 {
+		r.key = key
+		return nil, false
+	}
+	r.rects = r.rects[:0]
+	for _, s := range r.spans {
+		r.rects = append(r.rects, inputRect(s.Start, s.Width, key.cellW, key.scale, key.height))
+	}
+	if r.rects == nil {
+		r.rects = []neferclient.Rect{}
+	}
+	r.last = append(r.last[:0], r.spans...)
+	r.key = key
+	return r.rects, true
+}

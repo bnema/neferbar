@@ -115,9 +115,13 @@ type Bar struct {
 	// mappedW is the logical width the current layer surface was first drawn at.
 	// It resets to 0 when the surface is recreated.
 	mappedW int32
-	Stats   Stats
-	fatal   error
-	closed  bool
+
+	ptr   pointerState // pointer events turned into module lines
+	input inputRegion
+
+	Stats  Stats
+	fatal  error
+	closed bool
 }
 
 // New builds a bar from a validated config. cfgPath is the file the config came
@@ -311,6 +315,7 @@ func (b *Bar) syncModules(want []config.Module) {
 		ctx, cancel := context.WithCancel(b.runCtx)
 		m := module.New(w.Name, zones[w.Zone], w.Exec, b.modCh, b.log)
 		m.Env = b.env
+		m.Interactive = w.Interactive
 		m.Start(ctx)
 		next = append(next, runner{cfg: w, env: b.env, m: m, cancel: cancel})
 	}
@@ -323,6 +328,9 @@ func (b *Bar) syncModules(want []config.Module) {
 	b.mods = b.mods[:0]
 	for _, r := range next {
 		b.mods = append(b.mods, r.m)
+	}
+	if b.ptr.hover != nil && !slices.Contains(b.mods, b.ptr.hover) {
+		b.ptr.hover, b.ptr.hoverOff = nil, 0 // the hovered module was stopped
 	}
 	if b.lay != nil {
 		b.lay.SetModules(b.mods)
@@ -498,6 +506,7 @@ func (b *Bar) createSurface(h int32) error {
 	}
 	b.surf, b.sid = surf, surf.ID()
 	b.mappedW = 0
+	b.input.reset() // the new surface is click-through
 	b.fresh = true
 	b.configured, b.canPresent = false, false
 	return nil
@@ -524,6 +533,7 @@ func (b *Bar) draw() error {
 		b.Stats.NoSlot++ // Released retries
 		return nil
 	}
+	b.syncInputRegion()
 	if err = b.present(); err != nil {
 		return err
 	}
@@ -822,6 +832,44 @@ func (b *Bar) FDReady(id uint64) {
 	}
 }
 
+// syncInputRegion makes the part of the bar that takes pointer input the cells
+// of the interactive modules; the rest stays click-through.
+func (b *Bar) syncInputRegion() {
+	_, h, scale := b.surf.Size()
+	rects, changed := b.input.update(b.lay, inputKey{cellW: b.face.CellW, scale: scale, height: h})
+	if !changed {
+		return
+	}
+	if err := b.surf.SetInputRegion(rects); err != nil {
+		b.log.Warn("cannot set the input region", "err", err)
+	}
+}
+
+// Pointer turns pointer events over the bar into lines for interactive modules.
+func (b *Bar) Pointer(ev *neferclient.PointerEvent) {
+	if ev.Surface != b.sid || b.lay == nil || b.face == nil {
+		return
+	}
+	_, _, scale := b.surf.Size()
+	col := int(math.Floor(ev.X * scale / float64(b.face.CellW)))
+	switch ev.Kind {
+	case neferclient.PointerEnter, neferclient.PointerMotion:
+		b.ptr.motion(b.lay, col)
+	case neferclient.PointerLeave:
+		b.ptr.leave()
+	case neferclient.PointerButton:
+		if ev.Pressed {
+			b.ptr.button(b.lay, col, ev.Button, 0) // neferclient v0.4.0 adds the serial
+		}
+	case neferclient.PointerAxis:
+		delta := ev.DY
+		if ev.Axis == neferclient.AxisHorizontal {
+			delta = ev.DX
+		}
+		b.ptr.axis(b.lay, col, ev.Axis, ev.Value120, delta)
+	}
+}
+
 // Error logs non-fatal connection errors.
 func (b *Bar) Error(err error) { b.log.Warn("wayland", "err", err) }
 
@@ -830,7 +878,6 @@ func (b *Bar) OutputAdded(*neferclient.Output)           {}
 func (b *Bar) OutputRemoved(uint32)                      {}
 func (b *Bar) Locked()                                   {}
 func (b *Bar) LockFinished()                             {}
-func (b *Bar) Pointer(*neferclient.PointerEvent)         {}
 func (b *Bar) Key(*neferclient.KeyEvent)                 {}
 func (b *Bar) KeyboardFocus(neferclient.SurfaceID, bool) {}
 func (b *Bar) SecretChanged(int)                         {}

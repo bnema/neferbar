@@ -300,6 +300,20 @@ func (w *logWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// DrainForTest empties the queue of Send lines and returns them without their
+// newlines.
+func DrainForTest(m *Module) []string {
+	var out []string
+	for {
+		select {
+		case ev := <-m.input:
+			out = append(out, string(ev.b[:ev.n-1]))
+		default:
+			return out
+		}
+	}
+}
+
 // PublishForTest injects a frame as if the script had printed it.
 func PublishForTest(m *Module, frame []byte) { m.publish(frame) }
 
