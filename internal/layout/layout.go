@@ -18,6 +18,16 @@ type Source struct {
 	input  []byte // reset + erase + frame, reused for each Write
 	cells  []gpu.Cell
 	failed bool
+
+	// start and shown are where Compose put the module's cells in the row, and
+	// how many of them survived clipping.
+	start, shown int
+}
+
+// Span is the part of the row a module occupies after Compose.
+type Span struct {
+	M            *module.Module
+	Start, Width int
 }
 
 // Layout owns the sources and the composed row.
@@ -208,6 +218,7 @@ func (l *Layout) Compose() []gpu.Cell {
 	}
 	var left, center, right int
 	for _, s := range l.sources {
+		s.start, s.shown = 0, 0
 		n := len(s.cells)
 		switch s.M.Zone {
 		case module.Left:
@@ -224,14 +235,18 @@ func (l *Layout) Compose() []gpu.Cell {
 	x := l.cols - right
 	for _, s := range l.sources {
 		if s.M.Zone == module.Right {
-			x += copy(l.row[x:], s.cells[:min(len(s.cells), l.cols-x)])
+			s.start = x
+			s.shown = copy(l.row[x:], s.cells[:min(len(s.cells), l.cols-x)])
+			x += s.shown
 		}
 	}
 	// Left zone from the left edge, clipped to its budget.
 	x, limit := 0, left
 	for _, s := range l.sources {
 		if s.M.Zone == module.Left && x < limit {
-			x += copy(l.row[x:limit], s.cells)
+			s.start = x
+			s.shown = copy(l.row[x:limit], s.cells)
+			x += s.shown
 		}
 	}
 	// Center zone: on the middle of the bar, and only as far from it as the
@@ -245,9 +260,33 @@ func (l *Layout) Compose() []gpu.Cell {
 		x, limit = start, start+center
 		for _, s := range l.sources {
 			if s.M.Zone == module.Center && x < limit {
-				x += copy(l.row[x:limit], s.cells)
+				s.start = x
+				s.shown = copy(l.row[x:limit], s.cells)
+				x += s.shown
 			}
 		}
 	}
 	return l.row
+}
+
+// Spans appends the span of every module that has cells in the row composed
+// last, in module order.
+func (l *Layout) Spans(dst []Span) []Span {
+	for _, s := range l.sources {
+		if s.shown > 0 {
+			dst = append(dst, Span{M: s.M, Start: s.start, Width: s.shown})
+		}
+	}
+	return dst
+}
+
+// At returns the module shown at column col of the row composed last, and the
+// column's offset inside the module.
+func (l *Layout) At(col int) (m *module.Module, offset int, ok bool) {
+	for _, s := range l.sources {
+		if col >= s.start && col < s.start+s.shown {
+			return s.M, col - s.start, true
+		}
+	}
+	return nil, 0, false
 }
