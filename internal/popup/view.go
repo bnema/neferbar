@@ -49,8 +49,18 @@ type menuModel struct {
 	chosen int32 // the id of the activated item, -1 for none
 	// changed is set when the level changed: the popup must be resized.
 	changed bool
-	// scroll wraps the items in a scrolling box: they are taller than a popup.
-	scroll bool
+	// scroll wraps the items in a scrolling box of scrollH pixels: they are
+	// taller than the popup.
+	scroll  bool
+	scrollH int
+}
+
+// fitTo is the fallback when the popup could not be resized for a level that
+// needs wantH pixels: if the surface keeps curH, the items scroll inside it.
+func (m *menuModel) fitTo(wantH, curH int32) {
+	if wantH > curH {
+		m.scroll, m.scrollH = true, max(int(curH)-2*Inset, 1)
+	}
 }
 
 func newMenu(items []module.MenuItem, token uint32) *menuModel {
@@ -106,8 +116,8 @@ func (m *menuModel) levelKey() string {
 	return k + "/"
 }
 
-// menuContentHeight is the height of the box that scrolls: the popup height
-// minus the stylesheet's padding and border.
+// menuContentHeight is the height of the box that scrolls in a popup of
+// MaxHeight: the popup height minus the stylesheet's padding and border.
 const menuContentHeight = MaxHeight - 2*Inset
 
 const (
@@ -120,7 +130,7 @@ const (
 func menuView(f *nefergui.Frame, m *menuModel) {
 	parent := f.Root()
 	if m.scroll {
-		parent = parent.Scroll(nefergui.Key("scroll"), nefergui.Inline("height: "+strconv.Itoa(menuContentHeight)+"px"))
+		parent = parent.Scroll(nefergui.Key("scroll"), nefergui.Inline("height: "+strconv.Itoa(m.scrollH)+"px"))
 	}
 	col := parent.Column()
 	if m.inSubmenu() {

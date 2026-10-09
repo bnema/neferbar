@@ -1,6 +1,7 @@
 package bar
 
 import (
+	"slices"
 	"time"
 
 	"github.com/bnema/neferbar/internal/layout"
@@ -58,13 +59,7 @@ func (b *Bar) stepPopup() {
 		b.pop.Warm(b.fb)
 	}
 	for _, m := range b.mods {
-		for {
-			raw, ok := m.TakeControl()
-			if !ok {
-				break
-			}
-			b.control(m, raw)
-		}
+		b.drainControl(m)
 	}
 	if b.pop.OwnerRestarted() {
 		b.closePopup()
@@ -87,19 +82,102 @@ func (b *Bar) anyInteractive() bool {
 	return false
 }
 
-// control handles one control line of module m.
-func (b *Bar) control(m *module.Module, raw []byte) {
-	ctrl, err := module.ParseControl(raw)
-	if err != nil {
-		if !b.badCtl[m] {
-			if b.badCtl == nil {
-				b.badCtl = map[*module.Module]bool{}
-			}
-			b.badCtl[m] = true
-			b.log.Warn("module sent an invalid control line; ignored (shown once per module)", "module", m.Name, "err", err)
-		}
+// drainControl takes the control lines module m printed since the last
+// wake-up and carries them out. A script that prints a tooltip on every
+// mouse move would otherwise open and close a popup (a renderer, a surface)
+// for each one: of the tooltip and close lines of one wake-up only the last
+// counts.
+func (b *Bar) drainControl(m *module.Module) {
+	raw, ok := m.TakeControl()
+	if !ok {
 		return
 	}
+	b.ctlBuf = b.ctlBuf[:0]
+	for ; ok; raw, ok = m.TakeControl() {
+		ctrl, err := module.ParseControl(raw)
+		if err != nil {
+			b.badControl(m, err)
+			continue
+		}
+		b.ctlBuf = append(b.ctlBuf, ctrl)
+	}
+	b.ctlBuf = coalesceControl(b.ctlBuf)
+	for i := range b.ctlBuf {
+		b.control(m, b.ctlBuf[i])
+	}
+}
+
+// badControl logs an invalid control line, once per module.
+func (b *Bar) badControl(m *module.Module, err error) {
+	if b.badCtl[m] {
+		return
+	}
+	if b.badCtl == nil {
+		b.badCtl = map[*module.Module]bool{}
+	}
+	b.badCtl[m] = true
+	b.log.Warn("module sent an invalid control line; ignored (shown once per module)", "module", m.Name, "err", err)
+}
+
+// coalesceControl keeps, in order, every menu line and only the last of the
+// tooltip and close lines. It works in place.
+func coalesceControl(cs []module.Control) []module.Control {
+	last := -1
+	for i, c := range cs {
+		if c.Type != module.ControlMenu {
+			last = i
+		}
+	}
+	i := 0
+	return slices.DeleteFunc(cs, func(c module.Control) bool {
+		drop := c.Type != module.ControlMenu && i != last
+		i++
+		return drop
+	})
+}
+
+// tooltipInterval is the shortest time between two tooltips opened for one
+// module.
+const tooltipInterval = 250 * time.Millisecond
+
+// tooltipLimiter rate-limits the tooltips of each module.
+type tooltipLimiter struct {
+	last map[*module.Module]time.Time
+}
+
+// allow reports whether m may open a tooltip at now, and counts it if so.
+func (l *tooltipLimiter) allow(m *module.Module, now time.Time) bool {
+	if t, ok := l.last[m]; ok && now.Sub(t) < tooltipInterval {
+		return false
+	}
+	if l.last == nil {
+		l.last = map[*module.Module]time.Time{}
+	}
+	l.last[m] = now
+	return true
+}
+
+// forget drops what is kept for modules that are not in keep.
+func (l *tooltipLimiter) forget(keep []*module.Module) {
+	for m := range l.last {
+		if !slices.Contains(keep, m) {
+			delete(l.last, m)
+		}
+	}
+}
+
+// forgetModules drops the per-module state of modules that were stopped.
+func (b *Bar) forgetModules(keep []*module.Module) {
+	for m := range b.badCtl {
+		if !slices.Contains(keep, m) {
+			delete(b.badCtl, m)
+		}
+	}
+	b.tips.forget(keep)
+}
+
+// control handles one control line of module m.
+func (b *Bar) control(m *module.Module, ctrl module.Control) {
 	if !m.Interactive {
 		return // only modules that asked for the pointer may open popups
 	}
@@ -112,6 +190,9 @@ func (b *Bar) control(m *module.Module, raw []byte) {
 		// Only for the module under the pointer, and never over a menu.
 		if m != b.ptr.hover || b.pop.Kind() == popup.KindMenu {
 			return
+		}
+		if b.pop.ShowsTooltip(m, ctrl) || !b.tips.allow(m, time.Now()) {
+			return // already shown, or the script asks too often
 		}
 		b.openPopup(m, popup.KindTooltip, ctrl, 0)
 	case module.ControlMenu:

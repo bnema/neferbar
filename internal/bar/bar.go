@@ -126,6 +126,8 @@ type Bar struct {
 	warmed  bool
 	spanBuf []layout.Span
 	badCtl  map[*module.Module]bool // modules whose invalid control line was logged
+	tips    tooltipLimiter
+	ctlBuf  []module.Control // the control lines of one wake-up, reused
 
 	Stats  Stats
 	fatal  error
@@ -341,6 +343,7 @@ func (b *Bar) syncModules(want []config.Module) {
 	for _, r := range next {
 		b.mods = append(b.mods, r.m)
 	}
+	b.forgetModules(b.mods)
 	if b.ptr.hover != nil && !slices.Contains(b.mods, b.ptr.hover) {
 		b.ptr.hover, b.ptr.hoverOff = nil, 0 // the hovered module was stopped
 	}
@@ -773,7 +776,12 @@ func (b *Bar) shutdown() error {
 		r.m.Wait(3 * time.Second)
 	}
 	b.closePopup()
-	b.pop.Wait() // the warm-up renderer must be gone before the GPU state is
+	// The warm-up renderer must be gone before the GPU state is, but a stuck
+	// GPU library must not hold the shutdown.
+	if !b.pop.WaitTimeout(warmupWait) {
+		b.log.Warn("the popup warm-up did not end; shutting down anyway")
+	}
+	popup.RemoveCSS()
 	b.dropRenderer()
 	b.face.Close()
 	if b.node != nil {
@@ -789,6 +797,9 @@ func (b *Bar) shutdown() error {
 // settleDelay is how long the bar waits for the second half of a scale or size
 // change before it rebuilds.
 const settleDelay = 60 * time.Millisecond
+
+// warmupWait is how long shutdown waits for the popup warm-up.
+const warmupWait = 2 * time.Second
 
 // geometryChanged is called when the compositor reports a new scale or size.
 // The first report builds at once, because there is nothing on screen yet.

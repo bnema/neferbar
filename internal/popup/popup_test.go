@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bnema/neferclient"
 
@@ -245,5 +246,77 @@ func TestMapKey(t *testing.T) {
 		if got := mapKey(c.sym, c.sub); got != c.want {
 			t.Errorf("%s: mapKey(%#x, %v) = %d, want %d", c.comment, c.sym, c.sub, got, c.want)
 		}
+	}
+}
+
+func TestTooltipDoesNotWaitForTheWarmUpButMenusDo(t *testing.T) {
+	h := &Host{}
+	if !h.waitWarm(KindTooltip) || !h.waitWarm(KindMenu) {
+		t.Fatal("without a warm-up nothing waits")
+	}
+	h.warm = make(chan struct{})
+	if h.waitWarm(KindTooltip) {
+		t.Fatal("a tooltip must be skipped while the warm-up runs")
+	}
+	if h.WaitTimeout(10 * time.Millisecond) {
+		t.Fatal("WaitTimeout reported a running warm-up as done")
+	}
+	got := make(chan bool)
+	go func() { got <- h.waitWarm(KindMenu) }()
+	select {
+	case <-got:
+		t.Fatal("a menu must wait for the warm-up")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(h.warm)
+	if !<-got {
+		t.Fatal("a menu goes on once the warm-up ended")
+	}
+	if !h.waitWarm(KindTooltip) || !h.WaitTimeout(time.Second) {
+		t.Fatal("after the warm-up a tooltip goes on")
+	}
+}
+
+func TestShowsTooltip(t *testing.T) {
+	m := &module.Module{}
+	other := &module.Module{}
+	c := module.Control{Type: module.ControlTooltip, Col: 1, Width: 2, Title: "T", Body: "B"}
+	h := &Host{kind: KindTooltip, owner: m, tipKey: keyOf(c)}
+	if !h.showsTooltip(m, c) {
+		t.Fatal("the same tooltip of the same owner is shown")
+	}
+	for name, d := range map[string]module.Control{
+		"title": {Col: 1, Width: 2, Title: "T2", Body: "B"}, "body": {Col: 1, Width: 2, Title: "T", Body: "B2"},
+		"col": {Col: 2, Width: 2, Title: "T", Body: "B"}, "width": {Col: 1, Width: 3, Title: "T", Body: "B"},
+	} {
+		if h.showsTooltip(m, d) {
+			t.Errorf("a tooltip with another %s counts as shown", name)
+		}
+	}
+	if h.showsTooltip(other, c) {
+		t.Error("another owner's tooltip counts as shown")
+	}
+	h.kind = KindMenu
+	if h.showsTooltip(m, c) {
+		t.Error("a menu counts as a tooltip")
+	}
+	if (*Host)(nil).ShowsTooltip(m, c) || (&Host{}).ShowsTooltip(m, c) {
+		t.Error("no popup open must not match")
+	}
+}
+
+func TestFitToScrollsAMenuThatCannotBeResized(t *testing.T) {
+	m := newMenu(nil, 1)
+	m.fitTo(200, 300) // the new level fits: no scrolling
+	if m.scroll {
+		t.Fatal("a level that fits must not scroll")
+	}
+	m.fitTo(400, 300)
+	if !m.scroll || m.scrollH != 300-2*Inset {
+		t.Fatalf("scroll %v height %d", m.scroll, m.scrollH)
+	}
+	m.fitTo(400, 1)
+	if m.scrollH < 1 {
+		t.Fatalf("scroll height %d", m.scrollH)
 	}
 }

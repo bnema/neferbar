@@ -393,6 +393,9 @@ func DrainForTest(m *Module) []string {
 	}
 }
 
+// ReadFramesForTest feeds r to the module as its script's stdout.
+func (m *Module) ReadFramesForTest(r io.Reader) { m.readFrames(r) }
+
 // PublishForTest injects a frame as if the script had printed it.
 func PublishForTest(m *Module, frame []byte) { m.publish(frame) }
 

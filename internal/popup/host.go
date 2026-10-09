@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"time"
 
 	"github.com/bnema/neferclient"
 	"github.com/bnema/nefergui"
@@ -74,6 +75,7 @@ type Host struct {
 	menu   *menuModel
 
 	kind      Kind
+	tipKey    tooltipKey // what the open tooltip shows
 	owner     *module.Module
 	ownerGen  uint64
 	anchor    neferclient.Rect
@@ -126,12 +128,62 @@ func (h *Host) Warm(fb *neferclient.Feedback) {
 	}()
 }
 
-// Wait blocks until the warm-up renderer is gone. The bar calls it before it
-// tears down its own GPU state.
-func (h *Host) Wait() {
-	if h != nil && h.warm != nil {
-		<-h.warm
+// WaitTimeout waits up to d for the warm-up renderer to be gone and reports
+// whether it is. The bar calls it before it tears down its own GPU state, and
+// goes on when the GPU libraries are stuck.
+func (h *Host) WaitTimeout(d time.Duration) bool {
+	if h == nil || h.warm == nil {
+		return true
 	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-h.warm:
+		return true
+	case <-t.C:
+		return false
+	}
+}
+
+// waitWarm decides whether Open of a popup of the given kind goes on while the
+// warm-up renderer may still be loading the GPU libraries. A tooltip does not
+// wait: it is skipped, since a tooltip that shows up half a second late is
+// worse than none (false). A menu was asked for with a click and waits (true).
+func (h *Host) waitWarm(kind Kind) (proceed bool) {
+	if h.warm == nil {
+		return true
+	}
+	select {
+	case <-h.warm:
+		return true
+	default:
+	}
+	if kind == KindTooltip {
+		return false
+	}
+	<-h.warm // two renderers must not start at once
+	return true
+}
+
+// tooltipKey is what identifies a tooltip: showing the same one again is
+// pointless.
+type tooltipKey struct {
+	title, body string
+	col, width  int
+}
+
+func keyOf(c module.Control) tooltipKey {
+	return tooltipKey{c.Title, c.Body, c.Col, c.Width}
+}
+
+// ShowsTooltip reports whether the open popup is a tooltip of owner that shows
+// exactly what c says.
+func (h *Host) ShowsTooltip(owner *module.Module, c module.Control) bool {
+	return h != nil && h.r != nil && h.showsTooltip(owner, c)
+}
+
+func (h *Host) showsTooltip(owner *module.Module, c module.Control) bool {
+	return h.kind == KindTooltip && h.owner == owner && h.tipKey == keyOf(c)
 }
 
 // Active reports whether a popup is open.
@@ -184,7 +236,7 @@ func (h *Host) measure(r *nefergui.Renderer) (w, ht int32, scroll bool, err erro
 		h.menu.scroll = false
 		fw, fh, err = r.Measure(h.menu, menuView, MaxMenuWidth)
 		if err == nil && fh > MaxHeight {
-			h.menu.scroll = true
+			h.menu.scroll, h.menu.scrollH = true, menuContentHeight
 			fw, fh, err = r.Measure(h.menu, menuView, MaxMenuWidth)
 		}
 	}
@@ -207,12 +259,15 @@ func (h *Host) Open(req Request) error {
 	case req.Kind != KindTooltip && req.Kind != KindMenu:
 		return fmt.Errorf("popup: unknown kind %d", req.Kind)
 	}
-	h.Wait() // two renderers must not start at once
+	if !h.waitWarm(req.Kind) {
+		return nil // the GPU libraries are still loading: skip this tooltip
+	}
 	r, err := nefergui.NewRenderer(nefergui.RendererConfig{MainDevice: req.Feedback.MainDevice, Formats: formats(req.Feedback), Styles: h.styles})
 	if err != nil {
 		return fmt.Errorf("popup: %w", err)
 	}
 	h.r, h.kind = r, req.Kind
+	h.tipKey = keyOf(req.Ctrl)
 	switch req.Kind {
 	case KindTooltip:
 		h.tip = newTooltip(req.Ctrl.Title, req.Ctrl.Body)
@@ -431,7 +486,9 @@ func (h *Host) Draw() {
 		line := append([]byte("menu-activate "), strconv.FormatUint(uint64(h.menu.token), 10)...)
 		line = append(line, ' ')
 		line = strconv.AppendInt(line, int64(h.menu.chosen), 10)
-		h.owner.Send(line)
+		if !h.owner.Send(line) {
+			h.log.Debug("popup: the choice was not delivered: the script's input queue is full or closed", "module", h.owner.Name)
+		}
 		h.end(false)
 		return
 	}
@@ -456,9 +513,11 @@ func (h *Host) levelChanged() {
 		return
 	}
 	if err = h.surf.Reposition(Placement(h.anchor, h.bottomBar, w, ht)); err != nil {
-		// Without xdg_wm_base 3 the popup keeps its size: the new level
-		// is clipped or scrolls inside it.
+		// Without xdg_wm_base 3 the popup keeps its size: a level taller than
+		// it scrolls inside it.
 		h.log.Debug("popup: cannot resize the menu", "err", err)
+		_, cur, _ := h.surf.Size()
+		h.menu.fitTo(ht, cur)
 	}
 	h.r.Invalidate()
 }
