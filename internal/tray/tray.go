@@ -76,6 +76,7 @@ type item struct {
 	color               RGB
 	hasColor            bool
 	menu                string // object path of its dbusmenu, "" when none
+	tipTitle, tipBody   string // ToolTip, raw (may hold markup); the title if the item has no tooltip
 	isMenu              bool   // ItemIsMenu: Activate should open the menu
 	loaded              bool   // GetAll answered at least once
 	pending             uint32 // serial of a GetAll in flight
@@ -334,7 +335,7 @@ func (t *Tray) signal(m *zerobus.Message) {
 		}
 	case itemIface:
 		switch m.Member {
-		case "NewToolTip", "NewMenu", "NewOverlayIcon":
+		case "NewMenu", "NewOverlayIcon":
 			return // nothing the tray shows
 		}
 		for _, it := range t.items {
@@ -481,6 +482,7 @@ func (t *Tray) refresh(it *item) {
 func (t *Tray) load(it *item, r *zerobus.Reader) {
 	was := *it
 	var pixmaps, attentionPixmaps []byte // the chosen pixmap of each kind
+	tipSeen := false
 	end := r.Array('{')
 	for r.More(end) {
 		r.Struct()
@@ -495,6 +497,13 @@ func (t *Tray) load(it *item, r *zerobus.Reader) {
 			setStr(&it.iconName, r.Str())
 		case sig == "o" && key == "Menu":
 			setStr(&it.menu, r.ObjectPath())
+		case sig == "(sa(iiay)ss)" && key == "ToolTip":
+			r.Struct()
+			r.Str()           // icon name
+			r.Skip("a(iiay)") // pixmaps
+			setStr(&it.tipTitle, r.Str())
+			setStr(&it.tipBody, r.Str())
+			tipSeen = true
 		case sig == "b" && key == "ItemIsMenu":
 			it.isMenu = r.Bool()
 		case sig == "s" && key == "Status":
@@ -511,6 +520,9 @@ func (t *Tray) load(it *item, r *zerobus.Reader) {
 		t.opt.Log.Warn("tray: bad properties", "item", it.service, "err", r.Err())
 		*it = was
 		return
+	}
+	if !tipSeen {
+		it.tipTitle, it.tipBody = "", ""
 	}
 	it.loaded = true
 	if it.status == attention && attentionPixmaps != nil {
@@ -741,7 +753,12 @@ func (t *Tray) render(force bool) error {
 		for _, r := range it.icon {
 			w += vt.RuneWidth(r)
 		}
-		ts = append(ts, Target{Dest: dest, Path: it.path, Menu: it.menu, IsMenu: it.isMenu, Start: col, Width: w})
+		title, body := it.tipTitle, it.tipBody
+		if title == "" && body == "" {
+			title = it.title
+		}
+		ts = append(ts, Target{Dest: dest, Path: it.path, Menu: it.menu, IsMenu: it.isMenu, Start: col, Width: w,
+			TipTitle: title, TipBody: body})
 		col += w
 	}
 	f = append(f, '\n')

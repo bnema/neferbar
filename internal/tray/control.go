@@ -2,10 +2,13 @@ package tray
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +25,15 @@ const (
 	maxInputLine = 256
 	// maxSteps bounds the steps of a scroll line.
 	maxSteps = 1 << 16
+	// tooltipDelay is how long the pointer rests on an icon before its
+	// tooltip is sent to the bar.
+	tooltipDelay = 500 * time.Millisecond
+)
+
+// Control lines to the bar: OSC 777 "neferbar", a JSON object, BEL, newline.
+const (
+	controlPrefix = "\x1b]777;neferbar;"
+	controlSuffix = "\x07\n"
 )
 
 // lockedWriter serializes writes from the main loop and the control loop to
@@ -187,6 +199,23 @@ type control struct {
 	mu   sync.Mutex // guards conn and done: ctx ending closes conn from another goroutine
 	conn *zerobus.Conn
 	done bool
+
+	// The tooltip and menu state belong to the run goroutine.
+	tipTimer *time.Timer
+	hov      hover
+	menu     *lastMenu
+
+	// deadline, when set, ends every call of the sequence in progress
+	// (openMenu): a call waits for the smaller of callTimeout and what is left.
+	deadline time.Time
+}
+
+// hover is the icon the pointer rests on, and whether its tooltip is shown.
+type hover struct {
+	active     bool
+	dest, path string
+	col        int
+	shown      bool
 }
 
 // run serves lines until ctx ends.
@@ -194,10 +223,15 @@ func (c *control) run(ctx context.Context, lines <-chan string) {
 	stop := context.AfterFunc(ctx, c.close)
 	defer stop()
 	defer c.close()
+	c.tipTimer = time.NewTimer(time.Hour)
+	c.tipTimer.Stop()
+	defer c.tipTimer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-c.tipTimer.C:
+			c.showTooltip()
 		case line := <-lines:
 			cmd, ok := parseCommand(line)
 			if !ok {
@@ -260,7 +294,22 @@ func (c *control) drop(conn *zerobus.Conn) {
 
 func (c *control) handle(cmd command) {
 	switch cmd.verb {
+	case "hover":
+		tg, ok := c.t.target(cmd.col)
+		if !ok { // between icons
+			c.endHover()
+			return
+		}
+		if c.hov.active && c.hov.dest == tg.Dest && c.hov.path == tg.Path {
+			return // still on the same icon
+		}
+		c.endHover()
+		c.hov = hover{active: true, dest: tg.Dest, path: tg.Path, col: cmd.col}
+		c.tipTimer.Reset(tooltipDelay)
+	case "leave":
+		c.endHover()
 	case "click":
+		c.endHover()
 		tg, ok := c.t.target(cmd.col)
 		if !ok {
 			return
@@ -268,18 +317,22 @@ func (c *control) handle(cmd command) {
 		switch cmd.button {
 		case btnLeft:
 			if tg.IsMenu {
-				c.contextMenu(tg)
+				c.openMenu(tg, cmd.token)
 				return
 			}
 			err := c.call(tg, "Activate", "ii", func(e *zerobus.Encoder) { e.Int32(0); e.Int32(0) })
 			if isUnknownMethod(err) {
-				c.contextMenu(tg)
+				c.openMenu(tg, cmd.token)
 			}
 		case btnMiddle:
 			c.call(tg, "SecondaryActivate", "ii", func(e *zerobus.Encoder) { e.Int32(0); e.Int32(0) })
 		case btnRight:
-			c.contextMenu(tg)
+			c.openMenu(tg, cmd.token)
 		}
+	case "menu-activate":
+		c.menuActivate(cmd.token, int32(cmd.col)) // col carries the item id
+	case "menu-closed":
+		c.menuClosed(cmd.token)
 	case "scroll":
 		tg, ok := c.t.target(cmd.col)
 		if !ok {
@@ -290,6 +343,69 @@ func (c *control) handle(cmd command) {
 			orientation = "vertical"
 		}
 		c.call(tg, "Scroll", "is", func(e *zerobus.Encoder) { e.Int32(cmd.delta); e.Str(orientation) })
+	}
+}
+
+// endHover stops the tooltip timer and, if the tooltip was sent, tells the bar
+// to close it.
+func (c *control) endHover() {
+	c.tipTimer.Stop()
+	if c.hov.shown {
+		c.emit(map[string]string{"type": "close"})
+	}
+	c.hov = hover{}
+}
+
+// showTooltip sends the tooltip of the hovered icon when the pointer is still
+// on it and the application has something to say.
+func (c *control) showTooltip() {
+	if !c.hov.active || c.hov.shown {
+		return
+	}
+	tg, ok := c.t.target(c.hov.col)
+	if !ok || tg.Dest != c.hov.dest || tg.Path != c.hov.path {
+		c.endHover()
+		return
+	}
+	title, body := plainText(tg.TipTitle), plainText(tg.TipBody)
+	if title == "" && body == "" {
+		return
+	}
+	c.hov.shown = true
+	c.emit(struct {
+		Type  string `json:"type"`
+		Col   int    `json:"col"`
+		Width int    `json:"width"`
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}{"tooltip", tg.Start, tg.Width, title, body})
+}
+
+// emit writes a control line for the bar.
+func (c *control) emit(v any) {
+	var buf bytes.Buffer
+	buf.WriteString(controlPrefix)
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false) // "&" and "<" stay readable; the bar parses JSON either way
+	if err := enc.Encode(v); err != nil {
+		c.log.Warn("tray: cannot encode a control line", "err", err)
+		return
+	}
+	buf.Truncate(buf.Len() - 1) // Encode ends with a newline; the BEL goes first
+	buf.WriteString(controlSuffix)
+	c.write(buf.Bytes())
+}
+
+// writeLine writes the control line whose JSON is b.
+func (c *control) writeLine(b []byte) {
+	line := make([]byte, 0, len(controlPrefix)+len(b)+len(controlSuffix))
+	line = append(append(append(line, controlPrefix...), b...), controlSuffix...)
+	c.write(line)
+}
+
+func (c *control) write(line []byte) {
+	if _, err := c.t.opt.Out.Write(line); err != nil {
+		c.log.Debug("tray: cannot write a control line", "err", err)
 	}
 }
 
@@ -307,6 +423,12 @@ func isUnknownMethod(err error) bool {
 // reply is returned as is; a transport failure or a timeout drops the
 // connection and is logged.
 func (c *control) call(tg Target, member, sig string, args func(*zerobus.Encoder)) error {
+	return c.callOn(tg.Dest, tg.Path, itemIface, member, sig, args, nil)
+}
+
+// callOn is call for any interface. reply, if set, reads the body of a
+// successful reply; it must not keep what it reads.
+func (c *control) callOn(dest, path, iface, member, sig string, args func(*zerobus.Encoder), reply func(*zerobus.Message)) error {
 	conn, err := c.conn2()
 	if err != nil {
 		if !errors.Is(err, zerobus.ErrClosed) {
@@ -314,12 +436,23 @@ func (c *control) call(tg Target, member, sig string, args func(*zerobus.Encoder
 		}
 		return err
 	}
-	args(conn.NewCall(tg.Dest, tg.Path, itemIface, member, sig))
-	timer := time.AfterFunc(callTimeout, func() { _ = conn.Close() })
-	_, err = conn.Call()
+	wait := callTimeout
+	if !c.deadline.IsZero() {
+		if wait = min(wait, time.Until(c.deadline)); wait <= 0 {
+			return errBudget
+		}
+	}
+	args(conn.NewCall(dest, path, iface, member, sig))
+	timer := time.AfterFunc(wait, func() { _ = conn.Close() })
+	m, err := conn.Call()
+	if err == nil && reply != nil {
+		reply(m)
+	}
 	expired := !timer.Stop()
-	var reply *zerobus.Error
-	if errors.As(err, &reply) && !expired {
+	var refused *zerobus.Error
+	if (errors.As(err, &refused) || errors.Is(err, zerobus.ErrInvalid)) && !expired {
+		// An error reply, or a name or path the library would not send:
+		// the connection is fine.
 		c.log.Debug("tray: the application refused", "method", member, "err", err)
 		return err
 	}
@@ -332,8 +465,133 @@ func (c *control) call(tg Target, member, sig string, args func(*zerobus.Encoder
 		stopping := c.done
 		c.mu.Unlock()
 		if !stopping {
-			c.log.Warn("tray: application did not answer", "method", member, "dest", tg.Dest, "err", err)
+			c.log.Warn("tray: application did not answer", "method", member, "dest", dest, "err", err)
 		}
 	}
 	return err
+}
+
+// errBudget is returned by a call that did not start because the time for its
+// sequence ran out.
+var errBudget = errors.New("tray: out of time")
+
+// menuBudget is how long opening a menu may take in all, whatever the number
+// of calls it makes. A variable for the tests.
+var menuBudget = 4 * time.Second
+
+// closeBudget is the time given to tell an application its menu will not be
+// shown after all.
+const closeBudget = time.Second
+
+// transportFailed reports whether err means the call did not complete, as
+// opposed to the application answering with an error.
+func transportFailed(err error) bool {
+	var refused *zerobus.Error
+	return err != nil && !errors.As(err, &refused) && !errors.Is(err, zerobus.ErrInvalid)
+}
+
+// openMenu shows the application's menu for the press numbered token: its
+// dbusmenu when it has one, else it asks the application to show its own.
+// The calls share one deadline (menuBudget). When they fail after the
+// application was told "opened", it is told "closed" and the menu forgotten.
+func (c *control) openMenu(tg Target, token uint32) {
+	if tg.Menu == "" || tg.Menu == noMenuPath {
+		c.contextMenu(tg)
+		return
+	}
+	c.menu = nil // an older menu is superseded
+	c.deadline = time.Now().Add(menuBudget)
+	defer func() { c.deadline = time.Time{} }()
+
+	// Ignore refusals: many applications do not implement these.
+	err := c.callOn(tg.Dest, tg.Menu, menuIface, "AboutToShow", "i", func(e *zerobus.Encoder) { e.Int32(0) }, nil)
+	if err != nil && (transportFailed(err) || errors.Is(err, errBudget)) {
+		return
+	}
+	err = c.menuEvent(tg.Dest, tg.Menu, 0, "opened")
+	if errors.Is(err, errBudget) {
+		return // never sent
+	}
+	// From here on the application may believe its menu is open, even if the
+	// call timed out: it may have been delivered.
+	if (err != nil && transportFailed(err)) || !c.sendMenu(tg, token) {
+		c.deadline = time.Now().Add(closeBudget)
+		c.menuEvent(tg.Dest, tg.Menu, 0, "closed")
+		c.menu = nil
+	}
+}
+
+// sendMenu reads the menu of tg and writes it for the bar. It reports false
+// when there is no menu to show.
+func (c *control) sendMenu(tg Target, token uint32) bool {
+	var items []menuItem
+	var decodeErr error
+	err := c.callOn(tg.Dest, tg.Menu, menuIface, "GetLayout", "iias", func(e *zerobus.Encoder) {
+		e.Int32(0)
+		e.Int32(-1)
+		a := e.BeginArray('s')
+		e.EndArray(a)
+	}, func(m *zerobus.Message) {
+		if m.Signature != "u"+layoutSig {
+			decodeErr = errors.New("unexpected layout signature " + m.Signature)
+			return
+		}
+		items, _, decodeErr = decodeLayout(m.Body())
+	})
+	if err != nil {
+		return false
+	}
+	if decodeErr != nil {
+		c.log.Warn("tray: unreadable menu", "dest", tg.Dest, "err", decodeErr)
+		return false
+	}
+	if len(items) == 0 {
+		c.log.Debug("tray: the menu is empty", "dest", tg.Dest)
+		return false
+	}
+	line, ids, err := encodeMenu(menuLine{Type: "menu", Col: tg.Start, Width: tg.Width, Click: token, Items: items})
+	if err != nil {
+		c.log.Warn("tray: cannot send the menu", "dest", tg.Dest, "err", err)
+		return false
+	}
+	c.menu = &lastMenu{token: token, dest: tg.Dest, path: tg.Menu, ids: ids}
+	c.writeLine(line)
+	return true
+}
+
+// menuEvent sends a dbusmenu Event with no data.
+func (c *control) menuEvent(dest, path string, id int32, event string) error {
+	return c.callOn(dest, path, menuIface, "Event", "isvu", func(e *zerobus.Encoder) {
+		e.Int32(id)
+		e.Str(event)
+		e.Variant("i")
+		e.Int32(0)
+		e.Uint32(0)
+	}, nil)
+}
+
+// menuActivate carries out a choice of the bar: only for the menu it was last
+// given, and only for an item that menu holds.
+func (c *control) menuActivate(token uint32, id int32) {
+	m := c.menu
+	if m == nil || m.token != token {
+		c.log.Debug("tray: ignoring a choice for an unknown menu", "token", token)
+		return
+	}
+	if _, found := slices.BinarySearch(m.ids, id); !found {
+		c.log.Debug("tray: ignoring a choice that is not in the menu", "token", token, "id", id)
+		return
+	}
+	c.menu = nil
+	c.menuEvent(m.dest, m.path, id, "clicked")
+}
+
+// menuClosed tells the application its menu is closed.
+func (c *control) menuClosed(token uint32) {
+	m := c.menu
+	if m == nil || m.token != token {
+		return
+	}
+	c.menu = nil
+	c.menuEvent(m.dest, m.path, 0, "closed")
 }

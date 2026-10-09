@@ -223,6 +223,53 @@ while read -r event button col token; do
 done
 ```
 
+### Popups
+
+An interactive module can ask the bar for a **tooltip** or a **menu** by printing a *control line* instead of a frame. The bar draws it as a popup under the module (above it when `position = "bottom"`), with your theme's colors and font. Only modules with `interactive = true` can open popups, and there is one popup at a time.
+
+A control line is the escape sequence `ESC ] 777 ; neferbar ; <json> BEL`, then a newline. A language with a JSON library makes it easy; in Python:
+
+```python
+import json
+
+def control(message):
+    print(f"\033]777;neferbar;{json.dumps(message)}\007", flush=True)
+
+control({"type": "tooltip", "col": 0, "width": 1, "title": "Volume", "body": "42%"})
+```
+
+A right-click menu answers the `click` line it opens for:
+
+```python
+for line in sys.stdin:
+    event, *args = line.split()
+    if event == "click" and args[0] == "right":
+        token = int(args[2])
+        control({"type": "menu", "col": 0, "width": 1, "click": token, "items": [
+            {"id": 1, "label": "Mute", "kind": "check", "checked": False},
+            {"id": 0, "kind": "separator"},
+            {"id": 2, "label": "Settings"},
+        ]})
+    elif event == "menu-activate":
+        token, item = map(int, args)   # item is 1 or 2
+```
+
+`examples/modules/status.py` is a complete module: volume, Wi-Fi and battery icons that follow their level, a tooltip on each with the numbers, and a right-click menu on each (mute and volume levels, Wi-Fi networks, power profiles).
+
+`col` and `width` are the cells the popup points at, counted from the module's first cell, as in the lines the module reads; `width` is at least 1. The JSON objects:
+
+| `type` | Fields | Effect |
+|---|---|---|
+| `tooltip` | `col`, `width`, `title`, `body`, `rows` | shown only while the pointer is on the module: `title` in bold, then `body` (`\n` starts a new line, an empty line is kept), then `rows`, a table such as `[["Signal", "62%"], ["Band", "5 GHz"]]` whose columns line up |
+| `menu` | `col`, `width`, `click`, `items` | opens a menu; `click` is the token of the `click` line it answers |
+| `close` | none | closes the module's tooltip |
+
+A menu item is `{"id": 3, "label": "Mute", "kind": "check", "enabled": true, "checked": true, "items": [...]}`. `id` is a number you choose (0 or more), `kind` is `normal` (default), `separator`, `check` or `radio`, `enabled` defaults to true, and `items` makes it a submenu, which opens in place with a "‹ Back" entry. When the user picks an item the module reads `menu-activate <token> <id>`; when the menu closes any other way (Escape, a click elsewhere) it reads `menu-closed <token>`. The token is the `click` value of the menu.
+
+The bar opens a menu only for the latest click on the same module, at most 5 seconds old, and only once per click. A tooltip appears only while the module is hovered, and closes when the pointer leaves the module or a button is pressed. A module opens at most one tooltip every 250 ms, and a tooltip never covers an open menu.
+
+Limits: a control line is at most 64 KiB, a menu has at most 512 items in 8 levels, labels, titles and table cells are cut at 256 bytes, a tooltip body at 1024 bytes, a table has at most 32 rows of 4 cells. Control characters are removed from the texts. A control line that breaks a rule is ignored, logged once, and never shown as text. A line that starts like a control line but has no BEL is an ordinary frame.
+
 ### The bundled bar
 
 `examples/bundle` is a ready-made bar: workspaces on the left, the focused app in the middle, the clock on the right, in your terminal's colors.
@@ -257,6 +304,7 @@ The `examples/modules` directory has these:
 - `static.sh`: one line, then idle.
 - `clock.sh`: a clock with an icon.
 - `rainbow.sh [fps] [width]`: a 60 fps scrolling rainbow.
+- `status.py`: volume, Wi-Fi and battery with tooltips and right-click menus (needs `interactive = true`; uses `wpctl`, `nmcli` and `powerprofilesctl`, and optionally `pavucontrol` and `nmtui`).
 
 ## Layout
 
@@ -317,10 +365,23 @@ The icon takes the main color of the application's own icon, moved toward the ba
 
 - a left click calls the application's `Activate` (for an application that only offers a menu, it asks for the menu instead);
 - a middle click calls `SecondaryActivate`;
-- a right click calls `ContextMenu`, so the application shows its own menu;
+- a right click opens the application's menu, drawn by the bar (see below); an application without a dbusmenu is asked to show its own with `ContextMenu`;
 - the wheel calls `Scroll`: down and right are positive.
 
-Without `interactive = true` the icons only show. The tray talks to each application on a second connection and gives up on a call after 2 seconds, so a frozen application never blocks the other icons. Tooltips and the bar's own menus are not supported yet.
+Without `interactive = true` the icons only show. The tray talks to each application on a second connection and gives up on a call after 2 seconds, so a frozen application never blocks the other icons.
+
+**Menus.** For an application that publishes a dbusmenu (most do: Steam, Discord, nm-applet, the KDE applets), a right click opens its menu as a popup under the icon, or above it with `position = "bottom"`. A menu taller than 600 pixels scrolls. Check and radio entries show their state, disabled entries do nothing, and an entry with a submenu opens it in place, with a "‹ Back" entry on top. Choosing an entry sends the application a `clicked` event; dismissing the menu sends `closed`.
+
+| Key | Action |
+|---|---|
+| Down, Up, Tab, Shift+Tab | move between entries |
+| Enter, Space | choose the highlighted entry |
+| Left, BackSpace | go back out of a submenu |
+| Escape | close the menu |
+
+A click outside the menu also closes it. Entries are text only: icons and menus that fill in their submenus lazily are not supported.
+
+Resting the pointer on an icon for half a second shows the application's **tooltip** (its title in bold, its description below, markup removed; the item's title when it has no tooltip). Leaving the icon or clicking closes it.
 
 Pick another icon with `[tray.icons]`. The key is the item's id or application name, in any case; the value is a glyph name, the text to show, or `""` to hide the item:
 

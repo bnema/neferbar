@@ -69,13 +69,21 @@ type fakeItem struct {
 	unknown string        // the method it answers with UnknownMethod
 	slow    string        // the method it answers only after slowFor
 	slowFor time.Duration // how long slow takes
+	tip     *[2]string    // its ToolTip title and description, set through run
+	title   string        // its Title property, set through run
+
+	// A dbusmenu at /MenuBar, set through run.
+	menu   *tnode
+	mcalls chan string              // the dbusmenu calls it received
+	badSig bool                     // GetLayout answers with a string instead of a layout, set through run
+	mslow  map[string]time.Duration // dbusmenu methods it answers only after this long, set through run
 }
 
 func newFakeItem(t *testing.T, addr, id, iconName string, pixel [4]byte) *fakeItem {
 	c := dial(t, addr)
 	f := &fakeItem{c: c, name: c.UniqueName(), driver: dial(t, addr), cmds: make(chan func(), 1),
 		cur: [3]string{id, iconName, "Active"}, pixel: pixel, closed: make(chan struct{}),
-		calls: make(chan string, 32)}
+		calls: make(chan string, 32), mcalls: make(chan string, 32)}
 	go f.serve()
 	return f
 }
@@ -106,6 +114,12 @@ func (f *fakeItem) serve() {
 			(<-f.cmds)()
 			continue
 		}
+		if m.Type == zerobus.TypeMethodCall && m.Interface == menuIface {
+			if !f.menuCall(m) {
+				return
+			}
+			continue
+		}
 		if m.Type == zerobus.TypeMethodCall && m.Interface == itemIface {
 			if !f.action(m) {
 				return
@@ -122,6 +136,29 @@ func (f *fakeItem) serve() {
 			e.Str(k)
 			e.Variant("s")
 			e.Str(f.cur[i])
+		}
+		if f.tip != nil {
+			e.Struct()
+			e.Str("ToolTip")
+			e.Variant("(sa(iiay)ss)")
+			e.Struct()
+			e.Str("icon")
+			tp := e.BeginArray('(')
+			e.EndArray(tp)
+			e.Str(f.tip[0])
+			e.Str(f.tip[1])
+		}
+		if f.menu != nil {
+			e.Struct()
+			e.Str("Menu")
+			e.Variant("o")
+			e.ObjectPath("/MenuBar")
+		}
+		if f.title != "" {
+			e.Struct()
+			e.Str("Title")
+			e.Variant("s")
+			e.Str(f.title)
 		}
 		e.Struct()
 		e.Str("IconPixmap")
@@ -171,6 +208,15 @@ func (f *fakeItem) action(m *zerobus.Message) bool {
 func (f *fakeItem) register(t *testing.T) {
 	f.run(t, func() {
 		f.c.NewCall(watcherName, watcherPath, watcherIface, "RegisterStatusNotifierItem", "s").Str(f.name)
+		_, _ = f.c.Send()
+	})
+}
+
+// setTip changes the item's tooltip and emits NewToolTip.
+func (f *fakeItem) setTip(t *testing.T, title, body string) {
+	f.run(t, func() {
+		f.tip = &[2]string{title, body}
+		f.c.NewSignal(itemPath, itemIface, "NewToolTip", "")
 		_, _ = f.c.Send()
 	})
 }

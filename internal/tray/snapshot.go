@@ -11,6 +11,9 @@ type Target struct {
 	IsMenu bool   // the item only offers a menu: Activate means "open it"
 	Start  int    // first column of the icon in the line
 	Width  int    // cells the icon takes
+	// TipTitle and TipBody are the item's tooltip as it sent it, markup
+	// included; the title falls back to the item's Title.
+	TipTitle, TipBody string
 }
 
 // snapshot is the list of targets of the last line printed. The main loop

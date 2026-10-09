@@ -28,6 +28,7 @@ import (
 	"github.com/bnema/neferbar/internal/gpu"
 	"github.com/bnema/neferbar/internal/layout"
 	"github.com/bnema/neferbar/internal/module"
+	"github.com/bnema/neferbar/internal/popup"
 	"github.com/bnema/neferbar/internal/syncobj"
 	"github.com/bnema/neferbar/internal/theme"
 )
@@ -119,6 +120,15 @@ type Bar struct {
 	ptr   pointerState // pointer events turned into module lines
 	input inputRegion
 
+	pop     *popup.Host // the tooltip or menu being shown, if any
+	popC    <-chan time.Time
+	popCSS  string // the stylesheet last written for the popups
+	warmed  bool
+	spanBuf []layout.Span
+	badCtl  map[*module.Module]bool // modules whose invalid control line was logged
+	tips    tooltipLimiter
+	ctlBuf  []module.Control // the control lines of one wake-up, reused
+
 	Stats  Stats
 	fatal  error
 	closed bool
@@ -186,6 +196,7 @@ func (b *Bar) setTheme(th theme.Theme) {
 	}
 	b.dirty = true
 	b.watchTheme()
+	b.updatePopupStyle()
 }
 
 // watchTheme watches every file the theme was read from, so changing the
@@ -323,12 +334,16 @@ func (b *Bar) syncModules(want []config.Module) {
 		r.cancel()
 	}
 	b.runners = next
+	if o := b.pop.Owner(); o != nil && !slices.ContainsFunc(next, func(r runner) bool { return r.m == o }) {
+		b.closePopup() // its module was stopped or replaced
+	}
 	clear(b.stale)
 	b.watchScripts()
 	b.mods = b.mods[:0]
 	for _, r := range next {
 		b.mods = append(b.mods, r.m)
 	}
+	b.forgetModules(b.mods)
 	if b.ptr.hover != nil && !slices.Contains(b.mods, b.ptr.hover) {
 		b.ptr.hover, b.ptr.hoverOff = nil, 0 // the hovered module was stopped
 	}
@@ -353,6 +368,7 @@ func (b *Bar) applyConfig(next config.Config) {
 		b.log.Warn("bar.output changed: restart the bar to move it", "from", old.Bar.Output, "to", next.Bar.Output)
 		next.Bar.Output = old.Bar.Output
 	}
+	b.closePopup() // it was built from the old settings
 	b.cfg = next
 	b.fonts = fonts
 	if err = b.loadTheme(); err != nil { // the theme setting or the colors may have changed
@@ -365,6 +381,7 @@ func (b *Bar) applyConfig(next config.Config) {
 		b.log.Info("moving the bar", "to", next.Bar.Position)
 		b.dropRenderer()
 		_, h, _ := b.surf.Size()
+		b.closePopup()
 		if err = b.surf.Close(); err != nil {
 			b.fail(err)
 			return
@@ -389,6 +406,8 @@ func (b *Bar) Run(ctx context.Context) (err error) {
 	if err != nil {
 		return connectError(b.display, err)
 	}
+	b.pop = popup.NewHost(b.conn, b.log)
+	b.updatePopupStyle()
 	defer func() {
 		err = errors.Join(err, b.shutdown())
 		b.log.Info("stats", "presented", b.Stats.Presented, "rebuilds", b.Stats.Rebuilds,
@@ -417,6 +436,8 @@ func (b *Bar) Run(ctx context.Context) (err error) {
 			if err = b.conn.Dispatch(b); err != nil {
 				return fmt.Errorf("dispatch: %w", err)
 			}
+		case <-b.pop.Wake(): // the popup renderer wants a frame
+		case <-b.popC: // a popup frame was waiting for the GPU
 		case <-b.modCh:
 			b.Stats.ModuleWake++
 		case next := <-b.cfgCh:
@@ -435,6 +456,7 @@ func (b *Bar) Run(ctx context.Context) (err error) {
 		if err = b.step(); err != nil {
 			return err
 		}
+		b.stepPopup()
 	}
 	return nil
 }
@@ -637,6 +659,7 @@ func (b *Bar) reconcile() {
 		b.askedH, b.askedScale = wantH, scale
 		b.log.Info("recreating layer surface", "height", wantH, "scale", scale)
 		b.dropRenderer()
+		b.closePopup()
 		if err := b.surf.Close(); err != nil {
 			b.fail(err)
 			return
@@ -664,6 +687,7 @@ func (b *Bar) reconcile() {
 		// off. A new surface is mapped fresh and placed from its real size.
 		b.log.Info("recreating layer surface: the output width changed", "from", b.mappedW, "to", w)
 		b.dropRenderer()
+		b.closePopup()
 		if err := b.surf.Close(); err != nil {
 			b.fail(err)
 			return
@@ -751,6 +775,13 @@ func (b *Bar) shutdown() error {
 	for _, r := range b.runners {
 		r.m.Wait(3 * time.Second)
 	}
+	b.closePopup()
+	// The warm-up renderer must be gone before the GPU state is, but a stuck
+	// GPU library must not hold the shutdown.
+	if !b.pop.WaitTimeout(warmupWait) {
+		b.log.Warn("the popup warm-up did not end; shutting down anyway")
+	}
+	popup.RemoveCSS()
 	b.dropRenderer()
 	b.face.Close()
 	if b.node != nil {
@@ -766,6 +797,9 @@ func (b *Bar) shutdown() error {
 // settleDelay is how long the bar waits for the second half of a scale or size
 // change before it rebuilds.
 const settleDelay = 60 * time.Millisecond
+
+// warmupWait is how long shutdown waits for the popup warm-up.
+const warmupWait = 2 * time.Second
 
 // geometryChanged is called when the compositor reports a new scale or size.
 // The first report builds at once, because there is nothing on screen yet.
@@ -783,6 +817,10 @@ func (b *Bar) geometryChanged() {
 
 // Configure marks the surface presentable and rebuilds as needed.
 func (b *Bar) Configure(id neferclient.SurfaceID, _, _ int32) {
+	if b.pop.Is(id) {
+		b.pop.Configure()
+		return
+	}
 	if id != b.sid {
 		return
 	}
@@ -795,6 +833,10 @@ func (b *Bar) Configure(id neferclient.SurfaceID, _, _ int32) {
 
 // Scale follows the monitor's preferred scale.
 func (b *Bar) Scale(id neferclient.SurfaceID, _ float64) {
+	if b.pop.Is(id) {
+		b.pop.Scale()
+		return
+	}
 	if id == b.sid {
 		b.geometryChanged()
 	}
@@ -821,13 +863,43 @@ func (b *Bar) FeedbackDone(id neferclient.SurfaceID) {
 
 // Frame allows the next Present.
 func (b *Bar) Frame(id neferclient.SurfaceID) {
+	if b.pop.Is(id) {
+		b.pop.Frame()
+		return
+	}
 	if id == b.sid {
 		b.canPresent = true
 	}
 }
 
+// PopupDone is called when the compositor dismisses a popup of the bar: an
+// outside click, a denied grab. A menu tells its script.
+func (b *Bar) PopupDone(id neferclient.SurfaceID) {
+	if b.pop.Is(id) {
+		b.pop.PopupDone()
+	}
+}
+
+// Key goes to the popup that has the keyboard.
+func (b *Bar) Key(ev *neferclient.KeyEvent) {
+	if b.pop.Is(ev.Surface) {
+		b.pop.Key(ev)
+	}
+}
+
+// KeyboardFocus tells a popup whether it has the keyboard.
+func (b *Bar) KeyboardFocus(id neferclient.SurfaceID, focused bool) {
+	if b.pop.Is(id) {
+		b.pop.KeyboardFocus(focused)
+	}
+}
+
 // Closed ends the loop when the compositor closes the surface.
 func (b *Bar) Closed(id neferclient.SurfaceID) {
+	if b.pop.Is(id) {
+		b.closePopup()
+		return
+	}
 	if id == b.sid {
 		b.closed = true
 	}
@@ -835,6 +907,10 @@ func (b *Bar) Closed(id neferclient.SurfaceID) {
 
 // FDReady hands a slot back once the compositor released it.
 func (b *Bar) FDReady(id uint64) {
+	if id >= popup.FDBase {
+		b.pop.FDReady(id) // the release descriptor of a popup buffer
+		return
+	}
 	if b.rend == nil {
 		return
 	}
@@ -859,6 +935,10 @@ func (b *Bar) syncInputRegion() {
 
 // Pointer turns pointer events over the bar into lines for interactive modules.
 func (b *Bar) Pointer(ev *neferclient.PointerEvent) {
+	if b.pop.Is(ev.Surface) {
+		b.pop.Pointer(ev)
+		return
+	}
 	if ev.Surface != b.sid || b.lay == nil || b.face == nil {
 		return
 	}
@@ -871,12 +951,18 @@ func (b *Bar) handlePointer(ev *neferclient.PointerEvent, scale float64, cellW i
 	col := cellColumn(ev.X, scale, cellW)
 	switch ev.Kind {
 	case neferclient.PointerEnter, neferclient.PointerMotion:
+		before := b.ptr.hover
 		b.ptr.motion(b.lay, col)
+		if b.ptr.hover != before {
+			b.closeTooltip() // the pointer moved to another module
+		}
 	case neferclient.PointerLeave:
 		b.ptr.leave()
+		b.closeTooltip()
 	case neferclient.PointerButton:
 		if ev.Pressed {
-			b.ptr.button(b.lay, col, ev.Button, 0) // neferclient v0.4.0 adds the serial
+			b.closePopup() // a press on the bar ends a tooltip or a menu
+			b.ptr.button(b.lay, col, ev.Button, ev.Serial)
 		}
 	case neferclient.PointerAxis:
 		delta := ev.DY
@@ -893,10 +979,8 @@ func (b *Bar) handlePointer(ev *neferclient.PointerEvent, scale float64, cellW i
 func (b *Bar) Error(err error) { b.log.Warn("wayland", "err", err) }
 
 // Unused events.
-func (b *Bar) OutputAdded(*neferclient.Output)           {}
-func (b *Bar) OutputRemoved(uint32)                      {}
-func (b *Bar) Locked()                                   {}
-func (b *Bar) LockFinished()                             {}
-func (b *Bar) Key(*neferclient.KeyEvent)                 {}
-func (b *Bar) KeyboardFocus(neferclient.SurfaceID, bool) {}
-func (b *Bar) SecretChanged(int)                         {}
+func (b *Bar) OutputAdded(*neferclient.Output) {}
+func (b *Bar) OutputRemoved(uint32)            {}
+func (b *Bar) Locked()                         {}
+func (b *Bar) LockFinished()                   {}
+func (b *Bar) SecretChanged(int)               {}
