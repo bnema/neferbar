@@ -204,6 +204,10 @@ type control struct {
 	tipTimer *time.Timer
 	hov      hover
 	menu     *lastMenu
+
+	// deadline, when set, ends every call of the sequence in progress
+	// (openMenu): a call waits for the smaller of callTimeout and what is left.
+	deadline time.Time
 }
 
 // hover is the icon the pointer rests on, and whether its tooltip is shown.
@@ -432,8 +436,14 @@ func (c *control) callOn(dest, path, iface, member, sig string, args func(*zerob
 		}
 		return err
 	}
+	wait := callTimeout
+	if !c.deadline.IsZero() {
+		if wait = min(wait, time.Until(c.deadline)); wait <= 0 {
+			return errBudget
+		}
+	}
 	args(conn.NewCall(dest, path, iface, member, sig))
-	timer := time.AfterFunc(callTimeout, func() { _ = conn.Close() })
+	timer := time.AfterFunc(wait, func() { _ = conn.Close() })
 	m, err := conn.Call()
 	if err == nil && reply != nil {
 		reply(m)
@@ -461,6 +471,18 @@ func (c *control) callOn(dest, path, iface, member, sig string, args func(*zerob
 	return err
 }
 
+// errBudget is returned by a call that did not start because the time for its
+// sequence ran out.
+var errBudget = errors.New("tray: out of time")
+
+// menuBudget is how long opening a menu may take in all, whatever the number
+// of calls it makes. A variable for the tests.
+var menuBudget = 4 * time.Second
+
+// closeBudget is the time given to tell an application its menu will not be
+// shown after all.
+const closeBudget = time.Second
+
 // transportFailed reports whether err means the call did not complete, as
 // opposed to the application answering with an error.
 func transportFailed(err error) bool {
@@ -470,24 +492,41 @@ func transportFailed(err error) bool {
 
 // openMenu shows the application's menu for the press numbered token: its
 // dbusmenu when it has one, else it asks the application to show its own.
+// The calls share one deadline (menuBudget). When they fail after the
+// application was told "opened", it is told "closed" and the menu forgotten.
 func (c *control) openMenu(tg Target, token uint32) {
 	if tg.Menu == "" || tg.Menu == noMenuPath {
 		c.contextMenu(tg)
 		return
 	}
+	c.menu = nil // an older menu is superseded
+	c.deadline = time.Now().Add(menuBudget)
+	defer func() { c.deadline = time.Time{} }()
+
 	// Ignore refusals: many applications do not implement these.
 	err := c.callOn(tg.Dest, tg.Menu, menuIface, "AboutToShow", "i", func(e *zerobus.Encoder) { e.Int32(0) }, nil)
-	if transportFailed(err) {
+	if err != nil && (transportFailed(err) || errors.Is(err, errBudget)) {
 		return
 	}
 	err = c.menuEvent(tg.Dest, tg.Menu, 0, "opened")
-	if transportFailed(err) {
-		return
+	if errors.Is(err, errBudget) {
+		return // never sent
 	}
+	// From here on the application may believe its menu is open, even if the
+	// call timed out: it may have been delivered.
+	if (err != nil && transportFailed(err)) || !c.sendMenu(tg, token) {
+		c.deadline = time.Now().Add(closeBudget)
+		c.menuEvent(tg.Dest, tg.Menu, 0, "closed")
+		c.menu = nil
+	}
+}
+
+// sendMenu reads the menu of tg and writes it for the bar. It reports false
+// when there is no menu to show.
+func (c *control) sendMenu(tg Target, token uint32) bool {
 	var items []menuItem
-	var ids []int32
 	var decodeErr error
-	err = c.callOn(tg.Dest, tg.Menu, menuIface, "GetLayout", "iias", func(e *zerobus.Encoder) {
+	err := c.callOn(tg.Dest, tg.Menu, menuIface, "GetLayout", "iias", func(e *zerobus.Encoder) {
 		e.Int32(0)
 		e.Int32(-1)
 		a := e.BeginArray('s')
@@ -497,26 +536,27 @@ func (c *control) openMenu(tg Target, token uint32) {
 			decodeErr = errors.New("unexpected layout signature " + m.Signature)
 			return
 		}
-		items, ids, decodeErr = decodeLayout(m.Body())
+		items, _, decodeErr = decodeLayout(m.Body())
 	})
 	if err != nil {
-		return
+		return false
 	}
 	if decodeErr != nil {
 		c.log.Warn("tray: unreadable menu", "dest", tg.Dest, "err", decodeErr)
-		return
+		return false
 	}
 	if len(items) == 0 {
 		c.log.Debug("tray: the menu is empty", "dest", tg.Dest)
-		return
+		return false
 	}
-	line, ids, encErr := encodeMenu(menuLine{Type: "menu", Col: tg.Start, Width: tg.Width, Click: token, Items: items})
-	if encErr != nil {
-		c.log.Warn("tray: cannot send the menu", "dest", tg.Dest, "err", encErr)
-		return
+	line, ids, err := encodeMenu(menuLine{Type: "menu", Col: tg.Start, Width: tg.Width, Click: token, Items: items})
+	if err != nil {
+		c.log.Warn("tray: cannot send the menu", "dest", tg.Dest, "err", err)
+		return false
 	}
 	c.menu = &lastMenu{token: token, dest: tg.Dest, path: tg.Menu, ids: ids}
 	c.writeLine(line)
+	return true
 }
 
 // menuEvent sends a dbusmenu Event with no data.

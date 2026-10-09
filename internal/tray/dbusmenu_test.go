@@ -82,6 +82,7 @@ func (f *fakeItem) menuCall(m *zerobus.Message) bool {
 	default:
 		return true
 	}
+	time.Sleep(f.mslow[m.Member]) // a slow application: the reply is built, not sent yet
 	_, err := f.c.Send()
 	return err == nil
 }
@@ -324,4 +325,69 @@ func decodeTestLayout(t *testing.T, root *tnode) ([]menuItem, []int32) {
 	_ = srv.Close()
 	<-done
 	return items, ids
+}
+
+// A slow application cannot hold the tray for more than the shared budget, and
+// it is told the menu is closed when it was told it opened.
+func TestSlowMenuUsesOneDeadlineAndIsClosed(t *testing.T) {
+	old := menuBudget
+	menuBudget = 1200 * time.Millisecond
+	t.Cleanup(func() { menuBudget = old })
+
+	steam, _, in, out := setup(t)
+	menuReady(t, steam, in, out, sampleLayout()) // the tray knows the menu now
+	in.send(t, "menu-closed 9")
+	expectMenuCall(t, steam, "Event(0,closed)")
+
+	// Every call takes 500 ms: each is under the 2 s call limit, and the
+	// sequence runs out of its 1.2 s while GetLayout is waiting.
+	steam.run(t, func() {
+		steam.mslow = map[string]time.Duration{"AboutToShow": 500 * time.Millisecond, "Event": 500 * time.Millisecond, "GetLayout": 500 * time.Millisecond}
+	})
+	start := time.Now()
+	in.send(t, "click right 0 20")
+	expectMenuCall(t, steam, "AboutToShow(0)")
+	expectMenuCall(t, steam, "Event(0,opened)")
+	expectMenuCall(t, steam, "GetLayout")
+	// GetLayout ran out of budget: the application hears "closed".
+	expectMenuCall(t, steam, "Event(0,closed)")
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("opening the menu took %v", d)
+	}
+	noControlLineFor(t, out, "menu", 300*time.Millisecond)
+	// The menu is forgotten: a late choice does nothing.
+	in.send(t, "menu-activate 20 1")
+	expectNoMenuCall(t, steam)
+}
+
+// An application with an empty menu is also told that it closed.
+func TestEmptyMenuIsClosedAgain(t *testing.T) {
+	steam, _, in, out := setup(t)
+	menuReady(t, steam, in, out, sampleLayout())
+	in.send(t, "menu-closed 9")
+	expectMenuCall(t, steam, "Event(0,closed)")
+	steam.run(t, func() { steam.menu = &tnode{id: 0} })
+	// The tray still thinks it has a menu path: the layout is just empty.
+	in.send(t, "click right 0 21")
+	for _, want := range []string{"AboutToShow(0)", "Event(0,opened)", "GetLayout", "Event(0,closed)"} {
+		expectMenuCall(t, steam, want)
+	}
+	in.send(t, "menu-activate 21 1")
+	expectNoMenuCall(t, steam)
+}
+
+// noControlLineFor fails when a control line of the given type arrives within d.
+func noControlLineFor(t *testing.T, out *lines, typ string, d time.Duration) {
+	t.Helper()
+	timeout := time.After(d)
+	for {
+		select {
+		case s, ok := <-out.ch:
+			if ok && strings.HasPrefix(s, controlPrefix) && strings.Contains(s, `"type":"`+typ+`"`) {
+				t.Fatalf("unexpected %s line %q", typ, s)
+			}
+		case <-timeout:
+			return
+		}
+	}
 }

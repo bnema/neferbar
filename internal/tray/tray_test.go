@@ -74,7 +74,8 @@ type fakeItem struct {
 
 	// A dbusmenu at /MenuBar, set through run.
 	menu   *tnode
-	mcalls chan string // the dbusmenu calls it received
+	mcalls chan string              // the dbusmenu calls it received
+	mslow  map[string]time.Duration // dbusmenu methods it answers only after this long, set through run
 }
 
 func newFakeItem(t *testing.T, addr, id, iconName string, pixel [4]byte) *fakeItem {
