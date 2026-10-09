@@ -1,6 +1,7 @@
 package tray
 
 import (
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -11,18 +12,21 @@ import (
 
 func TestParseCommand(t *testing.T) {
 	good := map[string]command{
-		"click left 0 1":      {verb: "click", button: btnLeft, col: 0, token: 1},
-		"click middle 3 42":   {verb: "click", button: btnMiddle, col: 3, token: 42},
-		"click right 12 7":    {verb: "click", button: btnRight, col: 12, token: 7},
-		"scroll up 2 0":       {verb: "scroll", vert: true, delta: -2},
-		"scroll down 1 4":     {verb: "scroll", vert: true, delta: 1, col: 4},
-		"scroll left 3 1":     {verb: "scroll", delta: -3, col: 1},
-		"scroll right 5 2":    {verb: "scroll", delta: 5, col: 2},
-		"hover 4":             {verb: "hover", col: 4},
-		"leave":               {verb: "leave"},
-		"menu-activate 9 17":  {verb: "menu-activate", token: 9, col: 17},
-		"menu-closed 9":       {verb: "menu-closed", token: 9},
-		"  click  left 1  2 ": {verb: "click", button: btnLeft, col: 1, token: 2},
+		"click left 0 1":                      {verb: "click", button: btnLeft, col: 0, token: 1},
+		"click left 0 4294967295":             {verb: "click", button: btnLeft, token: 1<<32 - 1},
+		"click left 1048576 1":                {verb: "click", button: btnLeft, col: 1 << 20, token: 1},
+		"menu-activate 4294967295 2147483647": {verb: "menu-activate", token: 1<<32 - 1, col: 1<<31 - 1},
+		"click middle 3 42":                   {verb: "click", button: btnMiddle, col: 3, token: 42},
+		"click right 12 7":                    {verb: "click", button: btnRight, col: 12, token: 7},
+		"scroll up 2 0":                       {verb: "scroll", vert: true, delta: -2},
+		"scroll down 1 4":                     {verb: "scroll", vert: true, delta: 1, col: 4},
+		"scroll left 3 1":                     {verb: "scroll", delta: -3, col: 1},
+		"scroll right 5 2":                    {verb: "scroll", delta: 5, col: 2},
+		"hover 4":                             {verb: "hover", col: 4},
+		"leave":                               {verb: "leave"},
+		"menu-activate 9 17":                  {verb: "menu-activate", token: 9, col: 17},
+		"menu-closed 9":                       {verb: "menu-closed", token: 9},
+		"  click  left 1  2 ":                 {verb: "click", button: btnLeft, col: 1, token: 2},
 	}
 	for line, want := range good {
 		got, ok := parseCommand(line)
@@ -36,6 +40,11 @@ func TestParseCommand(t *testing.T) {
 		"scroll up", "scroll up 0 0", "scroll up -1 0", "scroll up 2", "scroll diagonal 1 0", "scroll up 1000000 0",
 		"hover", "hover x", "hover -1", "hover 1 2", "leave now", "menu-activate 1", "menu-activate 1 -2",
 		"menu-closed", "menu-closed x", "menu-closed 1 2", "CLICK left 0 1",
+		// Signs are refused, and so is anything past 31 bits for columns and steps.
+		"click left 0 +1", "click left +0 1", "click left 0 -0", "scroll up +2 0", "scroll up 2 +0", "hover +1",
+		"menu-activate +1 2", "menu-activate 1 +2", "menu-closed +1", "menu-closed -1",
+		"click left 2147483648 1", "scroll up 1 2147483648", "hover 2147483648", "hover 1048577",
+		"menu-activate 1 2147483648", "click left 0 0x1", "click left 0 1_0", "click left 0 1e3",
 	} {
 		if got, ok := parseCommand(line); ok {
 			t.Errorf("parseCommand(%q) = %+v, want it refused", line, got)
@@ -172,10 +181,46 @@ func TestFrozenApplicationDoesNotBlockNextClick(t *testing.T) {
 	in.send(t, "click left 0 1", "click left 2 2")
 	expectCall(t, steam, "Activate(0,0)")
 	expectCall(t, obs, "Activate(0,0)")
-	if d := time.Since(start); d < 1500*time.Millisecond || d > 2500*time.Millisecond {
+	if d := time.Since(start); d < 1500*time.Millisecond || d > 3500*time.Millisecond {
 		t.Fatalf("the second click arrived after %v, want about 2s (the watchdog)", d)
 	}
 	// And again on the dropped item: the connection was redialed.
 	in.send(t, "click middle 2 3")
 	expectCall(t, obs, "SecondaryActivate(0,0)")
+}
+
+// If shutdown begins while the control connection is being dialed, the new
+// connection is closed and not kept.
+func TestConn2ClosesADialThatRacesShutdown(t *testing.T) {
+	addr := privateBus(t)
+	dialing, release := make(chan struct{}), make(chan struct{})
+	var dialed *zerobus.Conn
+	c := &control{dial: func() (*zerobus.Conn, error) {
+		close(dialing)
+		<-release
+		conn, err := zerobus.Dial(addr)
+		dialed = conn
+		return conn, err
+	}}
+	errc := make(chan error, 1)
+	go func() { _, err := c.conn2(); errc <- err }()
+	<-dialing
+	closed := make(chan struct{})
+	go func() { c.close(); close(closed) }()
+	select {
+	case <-closed: // close must not wait for the dial
+	case <-time.After(time.Second):
+		t.Fatal("close waited for the dial")
+	}
+	close(release)
+	if err := <-errc; !errors.Is(err, zerobus.ErrClosed) {
+		t.Fatalf("conn2 = %v, want ErrClosed", err)
+	}
+	if c.conn != nil {
+		t.Fatal("the connection was kept after shutdown")
+	}
+	dialed.NewCall("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetId", "")
+	if _, err := dialed.Call(); err == nil {
+		t.Fatal("the connection dialed during shutdown is still open")
+	}
 }

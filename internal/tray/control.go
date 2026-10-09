@@ -63,10 +63,14 @@ func parseCommand(line string) (command, bool) {
 	if len(f) == 0 {
 		return command{}, false
 	}
-	num := func(s string, limit int) (int, bool) {
-		n, err := strconv.Atoi(s)
-		return n, err == nil && n >= 0 && n <= limit && s[0] != '+'
+	// Plain decimal digits only: ParseUint takes no sign, and the bit size
+	// keeps the value in range on 32-bit platforms, where int is 32 bits.
+	num := func(s string, bits int, limit uint64) (uint64, bool) {
+		n, err := strconv.ParseUint(s, 10, bits)
+		return n, err == nil && n <= limit
 	}
+	// Columns are bounded by 1<<20; tokens use the full uint32.
+	col := func(s string) (int, bool) { n, ok := num(s, 31, 1<<20); return int(n), ok }
 	c := command{verb: f[0]}
 	switch f[0] {
 	case "click":
@@ -83,12 +87,12 @@ func parseCommand(line string) (command, bool) {
 		default:
 			return command{}, false
 		}
-		col, ok1 := num(f[2], 1<<20)
-		tok, ok2 := num(f[3], 1<<32-1)
+		cl, ok1 := col(f[2])
+		tok, ok2 := num(f[3], 32, 1<<32-1)
 		if !ok1 || !ok2 {
 			return command{}, false
 		}
-		c.col, c.token = col, uint32(tok)
+		c.col, c.token = cl, uint32(tok)
 	case "scroll":
 		if len(f) != 4 {
 			return command{}, false
@@ -105,18 +109,18 @@ func parseCommand(line string) (command, bool) {
 		default:
 			return command{}, false
 		}
-		steps, ok1 := num(f[2], maxSteps)
-		col, ok2 := num(f[3], 1<<20)
+		steps, ok1 := num(f[2], 31, maxSteps)
+		cl, ok2 := col(f[3])
 		if !ok1 || !ok2 || steps == 0 {
 			return command{}, false
 		}
-		c.delta, c.col = sign*int32(steps), col
+		c.delta, c.col = sign*int32(steps), cl
 	case "hover":
-		col, ok := num(f[len(f)-1], 1<<20)
+		cl, ok := col(f[len(f)-1])
 		if len(f) != 2 || !ok {
 			return command{}, false
 		}
-		c.col = col
+		c.col = cl
 	case "leave":
 		if len(f) != 1 {
 			return command{}, false
@@ -125,14 +129,14 @@ func parseCommand(line string) (command, bool) {
 		if len(f) != 3 {
 			return command{}, false
 		}
-		tok, ok1 := num(f[1], 1<<32-1)
-		id, ok2 := num(f[2], 1<<31-1)
+		tok, ok1 := num(f[1], 32, 1<<32-1)
+		id, ok2 := num(f[2], 31, 1<<31-1)
 		if !ok1 || !ok2 {
 			return command{}, false
 		}
-		c.token, c.col = uint32(tok), id // col carries the menu item id
+		c.token, c.col = uint32(tok), int(id) // col carries the menu item id
 	case "menu-closed":
-		tok, ok := num(f[len(f)-1], 1<<32-1)
+		tok, ok := num(f[len(f)-1], 32, 1<<32-1)
 		if len(f) != 2 || !ok {
 			return command{}, false
 		}
@@ -215,21 +219,33 @@ func (c *control) close() {
 	}
 }
 
-// conn2 returns the control connection, dialing it when needed.
+// conn2 returns the control connection, dialing it when needed. The dial runs
+// outside the lock, so shutdown never waits for it: if shutdown began meanwhile
+// the new connection is closed and ErrClosed is returned.
 func (c *control) conn2() (*zerobus.Conn, error) {
+	c.mu.Lock()
+	if c.done {
+		c.mu.Unlock()
+		return nil, zerobus.ErrClosed
+	}
+	if conn := c.conn; conn != nil {
+		c.mu.Unlock()
+		return conn, nil
+	}
+	c.mu.Unlock()
+
+	conn, err := c.dial()
+	if err != nil {
+		return nil, err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.done {
+		_ = conn.Close()
 		return nil, zerobus.ErrClosed
 	}
-	if c.conn == nil {
-		conn, err := c.dial()
-		if err != nil {
-			return nil, err
-		}
-		c.conn = conn
-	}
-	return c.conn, nil
+	c.conn = conn
+	return conn, nil
 }
 
 // drop forgets conn after a transport error; the next call dials again.
