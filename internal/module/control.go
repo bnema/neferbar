@@ -20,6 +20,10 @@ const (
 	// MaxText is the longest tooltip body, in bytes; longer ones are cut at a
 	// rune boundary.
 	MaxText = 1024
+	// MaxRows and MaxCells bound the table of a tooltip; a cell is cut like a
+	// label.
+	MaxRows  = 32
+	MaxCells = 4
 	// maxColumn bounds the column and width of a control line.
 	maxColumn = 1 << 20
 )
@@ -44,8 +48,10 @@ type Control struct {
 	Type  string
 	Col   int // first cell of the anchor inside the module
 	Width int // cells of the anchor
-	// Title and Body are the text of a tooltip.
+	// Title and Body are the text of a tooltip, Rows its table: one entry
+	// per row, one string per cell.
 	Title, Body string
+	Rows        [][]string
 	// Click is the token of the press a menu answers.
 	Click uint32
 	Items []MenuItem
@@ -67,6 +73,7 @@ type wireControl struct {
 	Width int        `json:"width"`
 	Title string     `json:"title"`
 	Body  string     `json:"body"`
+	Rows  [][]string `json:"rows"`
 	Click uint32     `json:"click"`
 	Items []wireItem `json:"items"`
 }
@@ -104,7 +111,20 @@ func ParseControl(b []byte) (Control, error) {
 		}
 		c.Title = clean(w.Title, MaxLabel, false)
 		c.Body = clean(w.Body, MaxText, true)
-		if c.Title == "" && c.Body == "" {
+		if len(w.Rows) > MaxRows {
+			return Control{}, fmt.Errorf("tooltip: more than %d rows", MaxRows)
+		}
+		for _, row := range w.Rows {
+			if len(row) > MaxCells {
+				return Control{}, fmt.Errorf("tooltip: more than %d cells in a row", MaxCells)
+			}
+			cells := make([]string, len(row))
+			for i, s := range row {
+				cells[i] = clean(s, MaxLabel, false)
+			}
+			c.Rows = append(c.Rows, cells)
+		}
+		if c.Title == "" && c.Body == "" && len(c.Rows) == 0 {
 			return Control{}, errors.New("tooltip: no text")
 		}
 		return c, nil

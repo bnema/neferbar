@@ -44,6 +44,8 @@ func CSS(s Style) string {
 		bg, fg, cssString(s.Font), size, ac)
 	b.WriteString(".title { font-weight: bold; }\n")
 	b.WriteString(".body { opacity: 0.85; }\n")
+	b.WriteString(".table { column-gap: 1.5em; }\n")
+	b.WriteString(".key { opacity: 0.7; }\n")
 	b.WriteString("button.item, checkbox.item { text-align: left; background-color: transparent; padding: 2px 12px; }\n")
 	// nefergui paints the 1em check box centered in the left padding: leave
 	// room on both sides of it so the label does not touch the box.

@@ -107,8 +107,11 @@ class Volume:
 
     def tooltip(self):
         device = re.search(r'node\.description = "(.*)"', run("wpctl", "inspect", SINK))
-        state = "muted" if self.muted else f"{self.percent}%"
-        return f"Volume {state}", device.group(1) if device else ""
+        return "Volume", [
+            ("Level", f"{self.percent}%"),
+            ("Muted", "yes" if self.muted else "no"),
+            ("Output", device.group(1) if device else "?"),
+        ]
 
     def menu(self):
         items = [("Mute", "check", self.muted, lambda: self.mute())]
@@ -168,12 +171,16 @@ class Wifi:
 
     def tooltip(self):
         if self.ethernet:
-            return "Ethernet", "connected"
+            return "Ethernet", [("State", "connected")]
         if not self.enabled:
-            return "Wi-Fi off", ""
+            return "Wi-Fi", [("State", "off")]
         if not self.ssid:
-            return "Wi-Fi", "not connected"
-        return self.ssid, f"Signal {self.signal}%  ·  {self.freq}"
+            return "Wi-Fi", [("State", "not connected")]
+        return "Wi-Fi", [
+            ("Network", self.ssid),
+            ("Signal", f"{self.signal}%"),
+            ("Frequency", self.freq),
+        ]
 
     def menu(self):
         networks = [(f"{ssid}  {signal}%", "radio", ssid == self.ssid,
@@ -245,16 +252,17 @@ class Battery:
         return icon
 
     def tooltip(self):
-        title = f"Battery {self.percent}%"
-        body = self.status
-        if self.watts and self.status == "Discharging":
-            body += f"  ·  {self.watts:.1f} W  ·  {hours(self.now / (self.watts * 1e6))} left"
-        elif self.watts and self.status == "Charging":
-            body += f"  ·  {self.watts:.1f} W  ·  full in {hours((self.full - self.now) / (self.watts * 1e6))}"
+        rows = [("Charge", f"{self.percent}%"), ("State", self.status)]
+        if self.watts:
+            rows.append(("Power", f"{self.watts:.1f} W"))
+            if self.status == "Discharging":
+                rows.append(("Time left", hours(self.now / (self.watts * 1e6))))
+            elif self.status == "Charging":
+                rows.append(("Full in", hours((self.full - self.now) / (self.watts * 1e6))))
         profile = run("powerprofilesctl", "get").strip()
         if profile:
-            body += f"\nProfile: {profile}"
-        return title, body
+            rows.append(("Profile", profile))
+        return "Battery", rows
 
     def menu(self):
         current = run("powerprofilesctl", "get").strip()
@@ -294,7 +302,8 @@ class Module:
     def draw(self):
         # One icon per part, separated by a space: part i is at column 2*i.
         self.cols = {2 * i: part for i, part in enumerate(self.parts)}
-        frame = " ".join(part.icon() for part in self.parts)
+        # A trailing space keeps the last icon off the next module.
+        frame = " ".join(part.icon() for part in self.parts) + " "
         if frame != self.last_frame:
             self.last_frame = frame
             print(frame, flush=True)
@@ -308,9 +317,11 @@ class Module:
         part = self.hovered
         if part is None:
             return
-        title, body = part.tooltip()
+        # A tooltip has a bold title, then a "body" (text, "\n" for a new
+        # line) and/or "rows", a table whose columns line up.
+        title, rows = part.tooltip()
         control({"type": "tooltip", "col": self.col_of(part), "width": 1,
-                 "title": title, "body": body})
+                 "title": title, "rows": rows})
         self.tooltip_shown = True
 
     def hide_tooltip(self):

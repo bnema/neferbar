@@ -260,7 +260,7 @@ for line in sys.stdin:
 
 | `type` | Fields | Effect |
 |---|---|---|
-| `tooltip` | `col`, `width`, `title`, `body` | shown only while the pointer is on the module; `body` may hold newlines |
+| `tooltip` | `col`, `width`, `title`, `body`, `rows` | shown only while the pointer is on the module: `title` in bold, then `body` (`\n` starts a new line, an empty line is kept), then `rows`, a table such as `[["Signal", "62%"], ["Band", "5 GHz"]]` whose columns line up |
 | `menu` | `col`, `width`, `click`, `items` | opens a menu; `click` is the token of the `click` line it answers |
 | `close` | none | closes the module's tooltip |
 
@@ -268,7 +268,7 @@ A menu item is `{"id": 3, "label": "Mute", "kind": "check", "enabled": true, "ch
 
 The bar opens a menu only for the latest click on the same module, at most 5 seconds old, and only once per click. A tooltip appears only while the module is hovered, and closes when the pointer leaves the module or a button is pressed.
 
-Limits: a control line is at most 64 KiB, a menu has at most 512 items in 8 levels, labels and titles are cut at 256 bytes, a tooltip body at 1024 bytes. Control characters are removed from the texts. A control line that breaks a rule is ignored, logged once per module, and never shown as text. A line that starts like a control line but has no BEL is an ordinary frame.
+Limits: a control line is at most 64 KiB, a menu has at most 512 items in 8 levels, labels, titles and table cells are cut at 256 bytes, a tooltip body at 1024 bytes, a table has at most 32 rows of 4 cells. Control characters are removed from the texts. A control line that breaks a rule is ignored, logged once per module, and never shown as text. A line that starts like a control line but has no BEL is an ordinary frame.
 
 ### The bundled bar
 

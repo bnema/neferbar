@@ -107,6 +107,26 @@ func TestParseControlCleansText(t *testing.T) {
 	if err != nil || c.Title != "T" || c.Body != "a\nbc" {
 		t.Fatalf("tooltip text: %+v, %v", c, err)
 	}
+	c, err = ParseControl([]byte(`{"type":"tooltip","col":0,"width":1,"rows":[["Sig\nnal","62\u001b%"],["Band"]]}`))
+	if err != nil || len(c.Rows) != 2 || c.Rows[0][0] != "Signal" || c.Rows[0][1] != "62%" || c.Rows[1][0] != "Band" {
+		t.Fatalf("tooltip rows: %+v, %v", c, err)
+	}
+}
+
+func TestParseControlTableLimits(t *testing.T) {
+	row := `["a"]`
+	tooMany := `{"type":"tooltip","col":0,"width":1,"rows":[` + strings.TrimSuffix(strings.Repeat(row+",", MaxRows+1), ",") + `]}`
+	if _, err := ParseControl([]byte(tooMany)); err == nil {
+		t.Fatal("too many rows must fail")
+	}
+	wide := `{"type":"tooltip","col":0,"width":1,"rows":[[` + strings.TrimSuffix(strings.Repeat(`"a",`, MaxCells+1), ",") + `]]}`
+	if _, err := ParseControl([]byte(wide)); err == nil {
+		t.Fatal("too many cells must fail")
+	}
+	long := `{"type":"tooltip","col":0,"width":1,"rows":[["` + strings.Repeat("a", 2*MaxLabel) + `"]]}`
+	if c, err := ParseControl([]byte(long)); err != nil || len(c.Rows[0][0]) != MaxLabel {
+		t.Fatalf("long cell: %v", err)
+	}
 }
 
 func TestControlLineBetweenFramesLeavesBothIntact(t *testing.T) {

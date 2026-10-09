@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bnema/neferclient"
@@ -168,12 +169,20 @@ func (h *Host) waitWarm(kind Kind) (proceed bool) {
 // tooltipKey is what identifies a tooltip: showing the same one again is
 // pointless.
 type tooltipKey struct {
-	title, body string
-	col, width  int
+	title, body, rows string
+	col, width        int
 }
 
 func keyOf(c module.Control) tooltipKey {
-	return tooltipKey{c.Title, c.Body, c.Col, c.Width}
+	var rows strings.Builder
+	for _, r := range c.Rows {
+		for _, s := range r {
+			rows.WriteString(s)
+			rows.WriteByte(0) // cells never hold control characters
+		}
+		rows.WriteByte('\n')
+	}
+	return tooltipKey{c.Title, c.Body, rows.String(), c.Col, c.Width}
 }
 
 // ShowsTooltip reports whether the open popup is a tooltip of owner that shows
@@ -270,7 +279,7 @@ func (h *Host) Open(req Request) error {
 	h.tipKey = keyOf(req.Ctrl)
 	switch req.Kind {
 	case KindTooltip:
-		h.tip = newTooltip(req.Ctrl.Title, req.Ctrl.Body)
+		h.tip = newTooltip(req.Ctrl.Title, req.Ctrl.Body, req.Ctrl.Rows)
 		h.render = func(out *nefergui.Output) (bool, error) { return r.Render(out, h.tip, tooltipView) }
 	default:
 		h.menu = newMenu(req.Ctrl.Items, req.Ctrl.Click)

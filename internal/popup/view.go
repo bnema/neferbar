@@ -2,6 +2,7 @@ package popup
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/bnema/nefergui"
 
@@ -11,31 +12,53 @@ import (
 // tooltipModel is what a tooltip shows.
 type tooltipModel struct {
 	title string
-	lines []string // the body, one entry per non-empty line
+	lines []string   // the body, one entry per line; an empty one is a blank line
+	rows  [][]string // the table
+	cols  int        // cells of the longest row
 }
 
-func newTooltip(title, body string) *tooltipModel {
-	m := &tooltipModel{title: title}
-	start := 0
-	for i := 0; i <= len(body); i++ {
-		if i == len(body) || body[i] == '\n' {
-			if i > start {
-				m.lines = append(m.lines, body[start:i])
-			}
-			start = i + 1
-		}
+func newTooltip(title, body string, rows [][]string) *tooltipModel {
+	m := &tooltipModel{title: title, rows: rows}
+	if body = strings.Trim(body, "\n"); body != "" {
+		m.lines = strings.Split(body, "\n")
+	}
+	for _, r := range rows {
+		m.cols = max(m.cols, len(r))
 	}
 	return m
 }
 
-// tooltipView draws the title in bold, then the body.
+// tooltipView draws the title in bold, the body, then the table. The table is
+// laid out column by column, so every column is as wide as its widest cell
+// and the cells of a row line up.
 func tooltipView(f *nefergui.Frame, m *tooltipModel) {
 	col := f.Root().Column()
 	if m.title != "" {
 		col.Text(m.title, nefergui.Class("title"), nefergui.Key("title"))
 	}
 	for i, l := range m.lines {
+		if l == "" {
+			l = " " // keeps the height of a line
+		}
 		col.Text(l, nefergui.Class("body"), nefergui.Key("b"+strconv.Itoa(i)))
+	}
+	if m.cols == 0 {
+		return
+	}
+	table := col.Row(nefergui.Class("table"), nefergui.Key("table"))
+	for c := 0; c < m.cols; c++ {
+		class := "value"
+		if c == 0 && m.cols > 1 {
+			class = "key"
+		}
+		cells := table.Column(nefergui.Class(class), nefergui.Key("c"+strconv.Itoa(c)))
+		for r, row := range m.rows {
+			s := " "
+			if c < len(row) && row[c] != "" {
+				s = row[c]
+			}
+			cells.Text(s, nefergui.Key("r"+strconv.Itoa(r)))
+		}
 	}
 }
 

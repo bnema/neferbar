@@ -88,6 +88,8 @@ func TestCSS(t *testing.T) {
 	want := `app { background-color: #102030; color: #cccccc; font-family: "My Nerd Font"; font-size: 14.5px; padding: 4px; border: 1px solid #3584e4; }
 .title { font-weight: bold; }
 .body { opacity: 0.85; }
+.table { column-gap: 1.5em; }
+.key { opacity: 0.7; }
 button.item, checkbox.item { text-align: left; background-color: transparent; padding: 2px 12px; }
 checkbox.item { padding-left: 2em; }
 button.item:hover, checkbox.item:hover, button.item:focus-visible, checkbox.item:focus-visible { background-color: #3584e4; color: #102030; }
@@ -159,12 +161,31 @@ func TestWriteCSSPermissions(t *testing.T) {
 }
 
 func TestTooltipLines(t *testing.T) {
-	m := newTooltip("Title", "a\n\nb\n")
-	if m.title != "Title" || !slices.Equal(m.lines, []string{"a", "b"}) {
+	// A blank line in the body is kept; blank lines around it are not.
+	m := newTooltip("Title", "\na\n\nb\n", nil)
+	if m.title != "Title" || !slices.Equal(m.lines, []string{"a", "", "b"}) {
 		t.Fatalf("tooltip = %+v", m)
 	}
-	if m = newTooltip("", ""); len(m.lines) != 0 {
+	if m = newTooltip("", "", nil); len(m.lines) != 0 || m.cols != 0 {
 		t.Fatalf("empty tooltip = %+v", m)
+	}
+}
+
+func TestTooltipTable(t *testing.T) {
+	m := newTooltip("", "", [][]string{{"Signal", "62%"}, {"Band", "5 GHz", "ch 100"}, {"x"}})
+	if m.cols != 3 || len(m.rows) != 3 {
+		t.Fatalf("table = %+v", m)
+	}
+}
+
+func TestTooltipKeyIncludesRows(t *testing.T) {
+	a := module.Control{Type: module.ControlTooltip, Width: 1, Rows: [][]string{{"a", "b"}}}
+	b := module.Control{Type: module.ControlTooltip, Width: 1, Rows: [][]string{{"ab"}}}
+	if keyOf(a) == keyOf(b) {
+		t.Fatal("different tables must not share a key")
+	}
+	if keyOf(a) != keyOf(module.Control{Type: module.ControlTooltip, Width: 1, Rows: [][]string{{"a", "b"}}}) {
+		t.Fatal("same table, same key")
 	}
 }
 
