@@ -826,6 +826,9 @@ func (b *Bar) Frame(id neferclient.SurfaceID) {
 	}
 }
 
+// PopupDone is called when the compositor dismisses a popup of the bar.
+func (b *Bar) PopupDone(neferclient.SurfaceID) {}
+
 // Closed ends the loop when the compositor closes the surface.
 func (b *Bar) Closed(id neferclient.SurfaceID) {
 	if id == b.sid {

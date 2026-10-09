@@ -5,7 +5,7 @@ go 1.27
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/bnema/go-wayland-bindings v0.1.0
-	github.com/bnema/neferclient v0.3.0
+	github.com/bnema/neferclient v0.4.0
 	github.com/bnema/purego-vulkan v0.6.0
 	github.com/bnema/vev-vt v0.6.0
 	github.com/bnema/wlturbo v0.6.2
