@@ -19,7 +19,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
+	vt "github.com/bnema/vev-vt"
 	"github.com/bnema/zerobus"
 )
 
@@ -46,6 +48,11 @@ type Options struct {
 	Foreground, Background, Accent RGB
 	Out                            io.Writer // one line per change
 	Log                            *slog.Logger
+	// In carries the bar's pointer lines (see the README); nil ignores input.
+	In io.Reader
+	// Dial opens the connection that runs the actions In asks for, apart from
+	// the one that serves the tray. Required with In.
+	Dial func() (*zerobus.Conn, error)
 }
 
 type status uint8
@@ -68,6 +75,8 @@ type item struct {
 	resolved            bool
 	color               RGB
 	hasColor            bool
+	menu                string // object path of its dbusmenu, "" when none
+	isMenu              bool   // ItemIsMenu: Activate should open the menu
 	loaded              bool   // GetAll answered at least once
 	pending             uint32 // serial of a GetAll in flight
 	stale               bool   // a change arrived while GetAll was in flight
@@ -100,6 +109,9 @@ type Tray struct {
 	last    []byte
 	hist    histogram
 	err     error // first fatal error from dispatch
+
+	snap    snapshot // what the last line printed holds, for the control loop
+	targets []Target // scratch for the next snapshot
 }
 
 // Run serves the tray on c until ctx ends or the bus connection fails. It
@@ -113,6 +125,23 @@ func Run(ctx context.Context, c *zerobus.Conn, opt Options) error {
 	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
 	defer stop()
 	defer func() { _ = c.Close() }()
+
+	if opt.In != nil {
+		if opt.Dial == nil {
+			return fmt.Errorf("tray: Options.In needs Options.Dial")
+		}
+		t.opt.Out = &lockedWriter{w: opt.Out}
+		cctx, cancel := context.WithCancel(ctx)
+		lines := make(chan string, 16)
+		ctl := &control{t: t, dial: opt.Dial, log: t.opt.Log}
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() { defer wg.Done(); ctl.run(cctx, lines) }()
+		// The reader may sit in a blocking Read of stdin that nothing can
+		// interrupt; it is not waited for, and ends with the process.
+		go readCommands(cctx, opt.In, lines, t.opt.Log)
+		defer func() { cancel(); wg.Wait() }()
+	}
 
 	// Calls made from here on only go to the bus, which always answers.
 	// Handle sees what arrives meanwhile.
@@ -464,6 +493,10 @@ func (t *Tray) load(it *item, r *zerobus.Reader) {
 			setStr(&it.title, r.Str())
 		case sig == "s" && key == "IconName":
 			setStr(&it.iconName, r.Str())
+		case sig == "o" && key == "Menu":
+			setStr(&it.menu, r.ObjectPath())
+		case sig == "b" && key == "ItemIsMenu":
+			it.isMenu = r.Bool()
 		case sig == "s" && key == "Status":
 			it.status = parseStatus(r.Str())
 		case sig == "a(iiay)" && key == "IconPixmap":
@@ -665,15 +698,20 @@ func (t *Tray) renderOrFail() {
 	}
 }
 
-// render writes the line of visible items when it differs from the last one.
+// render writes the line of visible items when it differs from the last one,
+// and publishes where each icon sits for the control loop. The targets are
+// compared too: an item may change its menu without changing its icon.
 func (t *Tray) render(force bool) error {
 	f := t.frame[:0]
+	ts := t.targets[:0]
+	col := 0
 	for _, it := range t.items {
 		if !it.loaded || it.status == passive || it.icon == "" {
 			continue
 		}
 		if len(f) > 0 {
 			f = append(f, ' ')
+			col++
 		}
 		c, bold := t.opt.Foreground, false
 		switch {
@@ -695,10 +733,25 @@ func (t *Tray) render(force bool) error {
 		f = append(f, 'm')
 		f = append(f, it.icon...)
 		f = append(f, "\x1b[0m"...)
+		dest := it.dest
+		if it.owner != "" {
+			dest = it.owner
+		}
+		w := 0
+		for _, r := range it.icon {
+			w += vt.RuneWidth(r)
+		}
+		ts = append(ts, Target{Dest: dest, Path: it.path, Menu: it.menu, IsMenu: it.isMenu, Start: col, Width: w})
+		col += w
 	}
 	f = append(f, '\n')
-	t.frame = f
-	if !force && bytes.Equal(f, t.last) {
+	t.frame, t.targets = f, ts
+	sameFrame := bytes.Equal(f, t.last)
+	if !force && sameFrame && t.sameTargets(ts) {
+		return nil
+	}
+	t.snap.publish(ts) // before the line: whoever sees the line finds its targets
+	if !force && sameFrame {
 		return nil
 	}
 	t.frame, t.last = t.last, t.frame
@@ -706,6 +759,13 @@ func (t *Tray) render(force bool) error {
 		return fmt.Errorf("tray: %w", err)
 	}
 	return nil
+}
+
+// sameTargets reports whether the published snapshot equals ts.
+func (t *Tray) sameTargets(ts []Target) bool {
+	t.snap.mu.Lock()
+	defer t.snap.mu.Unlock()
+	return slices.Equal(t.snap.targets, ts)
 }
 
 const introspection = `<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
