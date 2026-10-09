@@ -189,6 +189,40 @@ done
 
 neferbar draws at most as often as your monitor refreshes. If a script prints faster than that, only the latest frame is drawn. A script that prints nothing costs nothing.
 
+### Clicks and scrolling
+
+A module that sets `interactive = true` receives the pointer on its **standard input**, one line per event. Without the key, the module is click-through and its stdin is empty, as before.
+
+```toml
+[[module]]
+name = "volume"
+zone = "right"
+exec = "~/.config/neferbar/volume.sh"
+interactive = true
+```
+
+Only the cells the module shows take the pointer; the rest of the bar stays click-through. Columns count cells from the module's first cell, starting at 0.
+
+| Line | Sent when |
+|---|---|
+| `hover <col>` | the pointer moves to another cell of the module |
+| `leave` | the pointer leaves the module |
+| `click <left\|middle\|right> <col> <token>` | a button is pressed. `token` counts presses from 1 |
+| `scroll <up\|down\|left\|right> <steps> <col>` | the wheel or touchpad scrolls. `steps` is at least 1 |
+
+Lines are ASCII and at most 127 bytes. A script that does not read its stdin loses the newest lines once 32 are waiting; it is never blocked or slowed down. A restarted script starts with an empty queue.
+
+```sh
+#!/bin/sh
+echo "vol"
+while read -r event button col token; do
+    case "$event $button" in
+        "click left") pactl set-sink-mute @DEFAULT_SINK@ toggle ;;
+        "scroll up") pactl set-sink-volume @DEFAULT_SINK@ +5% ;;
+    esac
+done
+```
+
 ### The bundled bar
 
 `examples/bundle` is a ready-made bar: workspaces on the left, the focused app in the middle, the clock on the right, in your terminal's colors.
@@ -268,6 +302,7 @@ A line is empty when no window has the focus. Control characters are removed fro
 name = "tray"
 zone = "right"
 exec = '"$NEFERBAR_BIN" tray'
+interactive = true
 ```
 
 Each icon is chosen without a list to maintain, from what the system already knows:
@@ -278,7 +313,14 @@ Each icon is chosen without a list to maintain, from what the system already kno
 4. a glyph for the category of the application's `.desktop` file: a gamepad for a game, a globe for a browser;
 5. the first letter of its name, in a circle.
 
-The icon takes the main color of the application's own icon, moved toward the bar's text color if it would not show on the bar. Hidden items are left out, and an item that asks for attention turns bold, in the accent color. Icons only show: clicks and menus are not supported.
+The icon takes the main color of the application's own icon, moved toward the bar's text color if it would not show on the bar. Hidden items are left out, and an item that asks for attention turns bold, in the accent color. With `interactive = true`, the icons react to the pointer:
+
+- a left click calls the application's `Activate` (for an application that only offers a menu, it asks for the menu instead);
+- a middle click calls `SecondaryActivate`;
+- a right click calls `ContextMenu`, so the application shows its own menu;
+- the wheel calls `Scroll`: down and right are positive.
+
+Without `interactive = true` the icons only show. The tray talks to each application on a second connection and gives up on a call after 2 seconds, so a frozen application never blocks the other icons. Tooltips and the bar's own menus are not supported yet.
 
 Pick another icon with `[tray.icons]`. The key is the item's id or application name, in any case; the value is a glyph name, the text to show, or `""` to hide the item:
 
