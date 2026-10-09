@@ -34,6 +34,7 @@ type press struct {
 type pointerState struct {
 	hover    *module.Module // the interactive module under the pointer
 	hoverOff int            // its cell column
+	hoverGen uint64         // hover.Gen() when the hover line was sent
 	token    uint32         // last click token
 	press    press
 	wheel    wheelAcc
@@ -52,8 +53,18 @@ func appendInt(b []byte, v int) []byte {
 	return strconv.AppendInt(b, int64(v), 10)
 }
 
+// forgetRestarted drops the hover of a module whose script restarted: the new
+// process was never told about it, so it gets no leave, and the next motion
+// sends it a hover.
+func (p *pointerState) forgetRestarted() {
+	if p.hover != nil && p.hover.Gen() != p.hoverGen {
+		p.hover, p.hoverOff = nil, 0
+	}
+}
+
 // motion handles Enter and Motion at cell column col of the bar row.
 func (p *pointerState) motion(lay *layout.Layout, col int) {
+	p.forgetRestarted()
 	m, off := interactiveAt(lay, col)
 	if m == p.hover && (m == nil || off == p.hoverOff) {
 		return
@@ -63,12 +74,14 @@ func (p *pointerState) motion(lay *layout.Layout, col int) {
 	}
 	p.hover, p.hoverOff = m, off
 	if m != nil {
+		p.hoverGen = m.Gen()
 		p.send(m, appendInt(p.line("hover"), off))
 	}
 }
 
 // leave handles the pointer leaving the bar.
 func (p *pointerState) leave() {
+	p.forgetRestarted()
 	if p.hover != nil {
 		p.send(p.hover, p.line("leave"))
 	}
@@ -151,6 +164,20 @@ type wheelAcc struct {
 }
 
 func (a *wheelAcc) reset() { *a = wheelAcc{} }
+
+// stop ends a touchpad scroll on axis: the pixels left over do not carry into
+// the next gesture.
+func (a *wheelAcc) stop(axis uint32) {
+	if axis <= 1 {
+		a.px[axis] = 0
+	}
+}
+
+// cellColumn is the cell column under logical x on a surface of the given
+// scale, for cells cellW physical pixels wide.
+func cellColumn(x, scale float64, cellW int) int {
+	return int(math.Floor(x * scale / float64(cellW)))
+}
 
 // add accumulates one event and returns the whole steps it completed:
 // positive for down or right, negative for up or left.

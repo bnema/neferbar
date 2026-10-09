@@ -200,3 +200,142 @@ func TestPointerAllocs(t *testing.T) {
 		t.Errorf("an unchanged input region allocates %.1f objects; want 0", got)
 	}
 }
+
+func TestRecreatingTheSurfaceResetsPointerState(t *testing.T) {
+	r := newInputRig(t)
+	b := &Bar{lay: r.lay}
+	b.ptr.motion(r.lay, 2)
+	b.ptr.wheel.add(neferclient.AxisVertical, 120, 0)
+	b.input.update(r.lay, inputKey{cellW: 10, scale: 1, height: 20})
+	drain(r.a)
+
+	b.resetInput()
+
+	if got := drain(r.a); !slices.Equal(got, []string{"leave"}) {
+		t.Fatalf("lines = %q, want one leave", got)
+	}
+	if b.ptr.hover != nil || b.ptr.wheel != (wheelAcc{}) {
+		t.Fatalf("pointer state kept: hover %v, wheel %+v", b.ptr.hover, b.ptr.wheel)
+	}
+	if _, changed := b.input.update(r.lay, inputKey{cellW: 10, scale: 1, height: 20}); !changed {
+		t.Fatal("the new surface needs its input region again")
+	}
+}
+
+// A failed SetInputRegion resets the tracking, so the next draw tries again.
+func TestFailedInputRegionIsRetried(t *testing.T) {
+	r := newInputRig(t)
+	var in inputRegion
+	key := inputKey{cellW: 10, scale: 1, height: 20}
+	if _, changed := in.update(r.lay, key); !changed {
+		t.Fatal("first update must change")
+	}
+	in.reset() // what syncInputRegion does when the request fails
+	if _, changed := in.update(r.lay, key); !changed {
+		t.Fatal("after a failure the same region must be sent again")
+	}
+}
+
+func TestAxisStopClearsTheTouchpadRemainder(t *testing.T) {
+	r := newInputRig(t)
+	b := &Bar{lay: r.lay, sid: 1}
+	axis := func(kind neferclient.PointerKind, ax uint32, dy float64) {
+		b.handlePointer(&neferclient.PointerEvent{Surface: 1, Kind: kind, X: 1, Axis: ax, DY: dy}, 1, 10)
+	}
+	axis(neferclient.PointerAxis, neferclient.AxisVertical, 10) // 10 of 15 px: no step yet
+	axis(neferclient.PointerAxisStop, neferclient.AxisVertical, 0)
+	axis(neferclient.PointerAxis, neferclient.AxisVertical, 10) // would complete a step if 10 were kept
+	if got := drain(r.a); len(got) != 0 {
+		t.Fatalf("lines = %q; the remainder crossed a gesture", got)
+	}
+	axis(neferclient.PointerAxis, neferclient.AxisVertical, 10)
+	if got := drain(r.a); !slices.Equal(got, []string{"scroll down 1 0"}) {
+		t.Fatalf("lines = %q, want one step", got)
+	}
+	// Stopping the other axis leaves this one alone.
+	axis(neferclient.PointerAxis, neferclient.AxisVertical, 10)
+	axis(neferclient.PointerAxisStop, neferclient.AxisHorizontal, 0)
+	axis(neferclient.PointerAxis, neferclient.AxisVertical, 5)
+	if got := drain(r.a); !slices.Equal(got, []string{"scroll down 1 0"}) {
+		t.Fatalf("lines = %q; the other axis's stop cleared this one", got)
+	}
+	var a wheelAcc
+	a.stop(7) // unknown axis: no panic
+}
+
+func TestRestartedScriptGetsNoLeaveAndAHoverAgain(t *testing.T) {
+	r := newInputRig(t)
+	var p pointerState
+	p.motion(r.lay, 1)
+	if got := drain(r.a); !slices.Equal(got, []string{"hover 1"}) {
+		t.Fatalf("lines = %q", got)
+	}
+	// The script restarts: the new process knows nothing of the hover.
+	module.SetGenForTest(r.a, 7)
+	p.motion(r.lay, 5) // moves off the module: the new process gets no leave
+	if got := drain(r.a); len(got) != 0 {
+		t.Fatalf("lines = %q, want no leave for the new process", got)
+	}
+	// The same move onto the module again sends it a hover.
+	p.motion(r.lay, 1)
+	module.SetGenForTest(r.a, 8)
+	p.motion(r.lay, 1) // still over it, but the script restarted: hover again
+	if got := drain(r.a); !slices.Equal(got, []string{"hover 1", "hover 1"}) {
+		t.Fatalf("lines = %q, want a fresh hover after the restart", got)
+	}
+
+	// leave after a restart sends nothing to the new process.
+	p.motion(r.lay, 2)
+	drain(r.a)
+	module.SetGenForTest(r.a, 9)
+	p.leave()
+	if got := drain(r.a); len(got) != 0 {
+		t.Fatalf("lines = %q, want none", got)
+	}
+	if p.hover != nil {
+		t.Fatal("hover not cleared")
+	}
+
+	// Without a restart nothing changes.
+	p.motion(r.lay, 2)
+	p.motion(r.lay, 6)
+	if got := drain(r.a); !slices.Equal(got, []string{"hover 2", "leave"}) {
+		t.Fatalf("lines = %q", got)
+	}
+	if got := testing.AllocsPerRun(100, func() { p.motion(r.lay, 1); p.motion(r.lay, 6) }); got > 0 && !racecheck.Enabled {
+		t.Errorf("motion allocates %.1f", got)
+	}
+}
+
+func TestCellColumnAtFractionalScale(t *testing.T) {
+	// Scale 1.6, 13 px cells: a cell is 8.125 logical px wide.
+	for _, c := range []struct {
+		x    float64
+		want int
+	}{{0, 0}, {8.1, 0}, {8.125, 1}, {16.24, 1}, {16.25, 2}, {40.6, 4}, {40.625, 5}, {-0.1, -1}} {
+		if got := cellColumn(c.x, 1.6, 13); got != c.want {
+			t.Errorf("cellColumn(%v) = %d, want %d", c.x, got, c.want)
+		}
+	}
+}
+
+func TestPointerFiltersSurfaceAndUsesFractionalScale(t *testing.T) {
+	r := newInputRig(t) // a: columns 0-3, b: 4-7
+	b := &Bar{lay: r.lay, sid: 5}
+	// Another surface (a popup): ignored before the bar's size is even read.
+	b.Pointer(&neferclient.PointerEvent{Surface: 9, Kind: neferclient.PointerMotion, X: 1})
+	if got := drain(r.a); len(got) != 0 || b.ptr.hover != nil {
+		t.Fatalf("a foreign surface moved the hover: %q", got)
+	}
+	// Logical x 30 at scale 1.6 and 13 px cells is column 3 (physical px 48).
+	b.handlePointer(&neferclient.PointerEvent{Surface: 5, Kind: neferclient.PointerMotion, X: 30}, 1.6, 13)
+	// Logical x 33 is column 4: the non-interactive module, so a leave.
+	b.handlePointer(&neferclient.PointerEvent{Surface: 5, Kind: neferclient.PointerMotion, X: 33}, 1.6, 13)
+	b.handlePointer(&neferclient.PointerEvent{Surface: 5, Kind: neferclient.PointerMotion, X: 8.2}, 1.6, 13)
+	b.handlePointer(&neferclient.PointerEvent{Surface: 5, Kind: neferclient.PointerButton, Button: btnRight, Pressed: true, X: 8.2}, 1.6, 13)
+	b.handlePointer(&neferclient.PointerEvent{Surface: 5, Kind: neferclient.PointerButton, Button: btnRight, Pressed: false, X: 8.2}, 1.6, 13)
+	want := []string{"hover 3", "leave", "hover 1", "click right 1 1"}
+	if got := drain(r.a); !slices.Equal(got, want) {
+		t.Fatalf("lines = %q, want %q", got, want)
+	}
+}

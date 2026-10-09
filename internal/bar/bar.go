@@ -506,10 +506,18 @@ func (b *Bar) createSurface(h int32) error {
 	}
 	b.surf, b.sid = surf, surf.ID()
 	b.mappedW = 0
-	b.input.reset() // the new surface is click-through
+	b.resetInput()
 	b.fresh = true
 	b.configured, b.canPresent = false, false
 	return nil
+}
+
+// resetInput forgets the input state of the surface being replaced: the new
+// surface starts click-through, and the module the pointer was over is told it
+// left, since no leave will come from a surface that is gone.
+func (b *Bar) resetInput() {
+	b.input.reset()
+	b.ptr.leave()
 }
 
 // step reparses changed modules and draws when something is ready.
@@ -533,6 +541,9 @@ func (b *Bar) draw() error {
 		b.Stats.NoSlot++ // Released retries
 		return nil
 	}
+	// The spans come from the row just drawn, and the input region follows
+	// them only when the draw succeeded: between a layout change and the next
+	// successful draw, the compositor may still route input by the older spans.
 	b.syncInputRegion()
 	if err = b.present(); err != nil {
 		return err
@@ -842,6 +853,7 @@ func (b *Bar) syncInputRegion() {
 	}
 	if err := b.surf.SetInputRegion(rects); err != nil {
 		b.log.Warn("cannot set the input region", "err", err)
+		b.input.reset() // the compositor kept the old one: the next draw tries again
 	}
 }
 
@@ -851,7 +863,12 @@ func (b *Bar) Pointer(ev *neferclient.PointerEvent) {
 		return
 	}
 	_, _, scale := b.surf.Size()
-	col := int(math.Floor(ev.X * scale / float64(b.face.CellW)))
+	b.handlePointer(ev, scale, b.face.CellW)
+}
+
+// handlePointer is Pointer for an event over the bar surface.
+func (b *Bar) handlePointer(ev *neferclient.PointerEvent, scale float64, cellW int) {
+	col := cellColumn(ev.X, scale, cellW)
 	switch ev.Kind {
 	case neferclient.PointerEnter, neferclient.PointerMotion:
 		b.ptr.motion(b.lay, col)
@@ -867,6 +884,8 @@ func (b *Bar) Pointer(ev *neferclient.PointerEvent) {
 			delta = ev.DX
 		}
 		b.ptr.axis(b.lay, col, ev.Axis, ev.Value120, delta)
+	case neferclient.PointerAxisStop:
+		b.ptr.wheel.stop(ev.Axis)
 	}
 }
 

@@ -308,6 +308,9 @@ func (w *logWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// SetGenForTest makes the module look as if its script was restarted.
+func SetGenForTest(m *Module, gen uint64) { m.gen.Store(gen) }
+
 // DrainForTest empties the queue of Send lines and returns them without their
 // newlines.
 func DrainForTest(m *Module) []string {
