@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 )
 
 // newInteractive is newTest for a module that may send control lines.
@@ -204,4 +206,62 @@ func TestOversizeControlWarnsOncePerRun(t *testing.T) {
 	if warns() != 2 {
 		t.Fatalf("a new run must warn again:\n%s", logs.String())
 	}
+}
+
+func FuzzParseControl(f *testing.F) {
+	for _, s := range []string{
+		`{"type":"close"}`,
+		`{"type":"tooltip","col":2,"width":1,"title":"Steam","body":"a\nb"}`,
+		`{"type":"menu","col":0,"width":2,"click":9,"items":[{"id":1,"label":"Open"},{"id":2,"kind":"separator"},{"id":3,"label":"Mute","kind":"check","checked":true},{"id":4,"label":"S","items":[{"id":5,"label":"A"}]},{"id":6,"enabled":false}]}`,
+		nested(MaxMenuDepth), nested(MaxMenuDepth + 1),
+		`{"type":"menu","col":0,"width":1,"click":1,"items":[{"id":1,"label":"a\u001b[31m\u202e\ud800"}]}`,
+		`{"type":"tooltip","col":-1,"width":99999999,"title":"x"}`,
+		`{"type":`, `[]`, `null`, ``, `{"type":"menu","items":null}`,
+	} {
+		f.Add([]byte(s))
+	}
+	f.Fuzz(func(t *testing.T, b []byte) {
+		c, err := ParseControl(b)
+		if err != nil {
+			return
+		}
+		// What is accepted respects every limit and carries no control rune.
+		if c.Col < 0 || c.Col > maxColumn || c.Width < 0 || c.Width > maxColumn {
+			t.Fatalf("column %d width %d", c.Col, c.Width)
+		}
+		bad := func(s string, max int) {
+			if len(s) > max || !utf8.ValidString(s) || strings.ContainsFunc(s, func(r rune) bool { return unicode.IsControl(r) && r != '\n' }) {
+				t.Fatalf("text %q", s)
+			}
+		}
+		bad(c.Title, MaxLabel)
+		bad(c.Body, MaxText)
+		count := 0
+		var walk func(items []MenuItem, depth int)
+		walk = func(items []MenuItem, depth int) {
+			if len(items) > 0 && depth > MaxMenuDepth {
+				t.Fatalf("depth %d", depth)
+			}
+			for _, it := range items {
+				count++
+				bad(it.Label, MaxLabel)
+				if strings.ContainsRune(it.Label, '\n') || it.ID < 0 {
+					t.Fatalf("item %+v", it)
+				}
+				switch it.Kind {
+				case KindNormal, KindSeparator, KindCheck, KindRadio:
+				default:
+					t.Fatalf("kind %q", it.Kind)
+				}
+				walk(it.Items, depth+1)
+			}
+		}
+		walk(c.Items, 1)
+		if count > MaxMenuItems {
+			t.Fatalf("%d items", count)
+		}
+		if c.Type == ControlMenu && len(c.Items) == 0 {
+			t.Fatal("an empty menu was accepted")
+		}
+	})
 }

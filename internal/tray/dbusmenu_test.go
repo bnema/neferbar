@@ -1,7 +1,9 @@
 package tray
 
 import (
+	"encoding/binary"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -74,6 +76,10 @@ func (f *fakeItem) menuCall(m *zerobus.Message) bool {
 		f.mcalls <- "GetLayout"
 		if f.menu == nil {
 			f.c.NewError(m, "org.freedesktop.DBus.Error.UnknownObject", "s").Str("no menu")
+			break
+		}
+		if f.badSig {
+			f.c.NewReply(m, "s").Str("not a layout")
 			break
 		}
 		e := f.c.NewReply(m, "u"+layoutSig)
@@ -390,4 +396,114 @@ func noControlLineFor(t *testing.T, out *lines, typ string, d time.Duration) {
 			return
 		}
 	}
+}
+
+// A reply that is not a layout makes no menu, and the application hears that
+// the menu it was told to open is closed.
+func TestUnexpectedLayoutSignature(t *testing.T) {
+	steam, _, in, out := setup(t)
+	menuReady(t, steam, in, out, sampleLayout())
+	in.send(t, "menu-closed 9")
+	expectMenuCall(t, steam, "Event(0,closed)")
+	steam.run(t, func() { steam.badSig = true })
+	in.send(t, "click right 0 30")
+	for _, want := range []string{"AboutToShow(0)", "Event(0,opened)", "GetLayout", "Event(0,closed)"} {
+		expectMenuCall(t, steam, want)
+	}
+	noControlLineFor(t, out, "menu", 300*time.Millisecond)
+	in.send(t, "menu-activate 30 1")
+	expectNoMenuCall(t, steam)
+}
+
+// decodeRaw sends body as the reply to one call on c and decodes it.
+func decodeRaw(t testing.TB, c *zerobus.Conn, next chan<- reply, sig string, body []byte) ([]menuItem, []int32, error) {
+	t.Helper()
+	next <- reply{sig, body}
+	c.NewCall("x.y", "/MenuBar", menuIface, "GetLayout", "")
+	m, err := c.Call()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return decodeLayout(m.Body())
+}
+
+// Bodies that are cut short or inconsistent must make an error, never a panic
+// or an unbounded read.
+func TestDecodeLayoutTruncatedAndMalformed(t *testing.T) {
+	addr, next := rawBus(t)
+	c := rawDial(t, addr)
+	good := layoutBody(sampleLayout())
+	if items, _, err := decodeRaw(t, c, next, "u"+layoutSig, good); err != nil || len(items) != 6 {
+		t.Fatalf("the hand-built body does not decode like the encoder's: %d items, %v", len(items), err)
+	}
+	// Every strict prefix of a valid body.
+	for n := 0; n < len(good); n++ {
+		if _, _, err := decodeRaw(t, c, next, "u"+layoutSig, good[:n]); err == nil {
+			t.Fatalf("a body cut at %d of %d bytes decoded without error", n, len(good))
+		}
+	}
+	// A child array that claims more bytes than the message has.
+	bad := slices.Clone(good)
+	// The children array of the root sits right after the root's properties
+	// (empty): find it by decoding position: revision(4) + pad(4) + id(4) + props len(4) + pad + kids len.
+	binary.LittleEndian.PutUint32(bad[16:], 1<<20)
+	if _, _, err := decodeRaw(t, c, next, "u"+layoutSig, bad); err == nil {
+		t.Fatal("an oversized child array decoded without error")
+	}
+	// An item with a property of the wrong type: ignored, not an error.
+	odd := &tnode{id: 0, kids: []tnode{{id: 1, props: []tprop{{"label", int32(5)}, {"enabled", "yes"}, {"visible", int32(0)}}}}}
+	items, _, err := decodeRaw(t, c, next, "u"+layoutSig, layoutBody(odd))
+	if err != nil || len(items) != 1 || items[0].Label != "" || !items[0].Enabled {
+		t.Fatalf("odd properties: %+v, %v", items, err)
+	}
+	// Garbage of every kind does not panic.
+	for _, junk := range [][]byte{nil, {0}, make([]byte, 7), make([]byte, 64), slices.Repeat([]byte{0xff}, 100)} {
+		decodeRaw(t, c, next, "u"+layoutSig, junk)
+	}
+}
+
+func FuzzDecodeLayout(f *testing.F) {
+	addr, next := rawBus(f)
+	c := rawDial(f, addr)
+	f.Add(layoutBody(sampleLayout()))
+	f.Add(layoutBody(&tnode{id: 0}))
+	f.Add(layoutBody(&tnode{id: 0, kids: []tnode{{id: 1, props: []tprop{{"label", "x"}, {"type", "separator"}}}}}))
+	f.Add(layoutBody(sampleLayout())[:30])
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, body []byte) {
+		if len(body) > 1<<16 {
+			return
+		}
+		items, ids, err := decodeRaw(t, c, next, "u"+layoutSig, body)
+		if err != nil {
+			return
+		}
+		if n := countItems(items); n > maxMenuItems || len(ids) != n {
+			t.Fatalf("%d items, %d ids", n, len(ids))
+		}
+		var walk func(l []menuItem, depth int)
+		walk = func(l []menuItem, depth int) {
+			if len(l) > 0 && depth > maxMenuDepth {
+				t.Fatalf("depth %d", depth)
+			}
+			for _, it := range l {
+				if len(it.Label) > maxMenuLabel || it.ID < 0 {
+					t.Fatalf("item %+v", it)
+				}
+				walk(it.Items, depth+1)
+			}
+		}
+		walk(items, 1)
+		// Whatever decodes must be acceptable to the bar (an empty menu is
+		// not sent at all).
+		if len(items) == 0 {
+			return
+		}
+		line, _, err := encodeMenu(menuLine{Type: "menu", Width: 1, Click: 1, Items: items})
+		if err == nil {
+			if _, err = module.ParseControl(line); err != nil {
+				t.Fatalf("the bar refuses a decoded menu: %v", err)
+			}
+		}
+	})
 }

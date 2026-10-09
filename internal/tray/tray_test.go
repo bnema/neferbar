@@ -75,6 +75,7 @@ type fakeItem struct {
 	// A dbusmenu at /MenuBar, set through run.
 	menu   *tnode
 	mcalls chan string              // the dbusmenu calls it received
+	badSig bool                     // GetLayout answers with a string instead of a layout, set through run
 	mslow  map[string]time.Duration // dbusmenu methods it answers only after this long, set through run
 }
 
