@@ -46,11 +46,16 @@ type Module struct {
 	Exec string
 	// Env is added to the script's environment, as KEY=value entries.
 	Env []string
+	// Interactive gives the script a stdin that carries Send lines. Set it
+	// before Start.
+	Interactive bool
 
 	mu      sync.Mutex
 	pending []byte // latest complete frame
 	dirty   bool
 	failed  bool // the script is not running; show an error marker
+
+	input chan event // lines for the script's stdin
 
 	wake chan<- struct{}
 	log  *slog.Logger
@@ -58,10 +63,39 @@ type Module struct {
 	done sync.WaitGroup // Start adds one; Run releases it when its process is gone
 }
 
+// maxLine is the longest line Send accepts, without its newline.
+const maxLine = 127
+
+// event is one stdin line, newline included.
+type event struct {
+	b [maxLine + 1]byte
+	n uint8
+}
+
 // New creates a module. wake receives a non-blocking signal after each frame.
 func New(name string, zone Zone, command string, wake chan<- struct{}, log *slog.Logger) *Module {
 	return &Module{Name: name, Zone: zone, Exec: command, wake: wake, log: log,
-		pending: make([]byte, 0, MaxFrame)}
+		pending: make([]byte, 0, MaxFrame), input: make(chan event, 32)}
+}
+
+// Send queues line (without a newline) for the script's stdin. It never
+// blocks and does not allocate. It reports false when the module is not
+// interactive, the line is longer than 127 bytes, or 32 lines are already
+// waiting (the script is not reading).
+func (m *Module) Send(line []byte) bool {
+	if !m.Interactive || len(line) > maxLine {
+		return false
+	}
+	var ev event
+	n := copy(ev.b[:], line)
+	ev.b[n] = '\n'
+	ev.n = uint8(n + 1)
+	select {
+	case m.input <- ev:
+		return true
+	default:
+		return false
+	}
 }
 
 // Take copies the pending frame into dst (reusing its capacity) and clears the
@@ -162,15 +196,62 @@ func (m *Module) runOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var in io.WriteCloser
+	if m.Interactive {
+		if in, err = cmd.StdinPipe(); err != nil {
+			return err
+		}
+		// Events queued while no script was running are stale.
+		for drained := false; !drained; {
+			select {
+			case <-m.input:
+			default:
+				drained = true
+			}
+		}
+	}
 	if err = cmd.Start(); err != nil {
 		return err
 	}
+	var stopWriter func()
+	if in != nil {
+		stopWriter = m.pumpInput(in)
+	}
 	m.readFrames(out)
+	if stopWriter != nil {
+		stopWriter()
+	}
 	err = cmd.Wait()
 	// The script may have started children that kept running (a "while" loop
 	// in a subshell, a "sleep"). They share the process group: end them too.
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	return err
+}
+
+// pumpInput writes queued events to w until the returned stop function is
+// called or a write fails. stop waits for the writer and closes w.
+func (m *Module) pumpInput(w io.WriteCloser) (stop func()) {
+	done := make(chan struct{})
+	exited := make(chan struct{})
+	go func() {
+		defer close(exited)
+		for {
+			select {
+			case ev := <-m.input:
+				if _, err := w.Write(ev.b[:ev.n]); err != nil {
+					return
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		// A write blocked on a script that does not read ends when w closes.
+		_ = w.Close()
+		<-exited
+	}
 }
 
 // readFrames splits r into frames and publishes each one.
