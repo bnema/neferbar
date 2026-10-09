@@ -254,7 +254,7 @@ for line in sys.stdin:
         token, item = map(int, args)   # item is 1 or 2
 ```
 
-`examples/modules/volume.py` is a complete module: wheel for the volume, left click to mute, a right-click menu with a check entry and a submenu.
+`examples/modules/status.py` is a complete module: volume, Wi-Fi and battery icons that follow their level, a tooltip on each with the numbers, and a right-click menu on each (mute and volume levels, Wi-Fi networks, power profiles).
 
 `col` and `width` are the cells the popup points at, counted from the module's first cell, as in the lines the module reads. The JSON objects:
 
@@ -304,7 +304,7 @@ The `examples/modules` directory has these:
 - `static.sh`: one line, then idle.
 - `clock.sh`: a clock with an icon.
 - `rainbow.sh [fps] [width]`: a 60 fps scrolling rainbow.
-- `volume.py`: an interactive volume module with a right-click menu (needs `interactive = true` and `wpctl`).
+- `status.py`: volume, Wi-Fi and battery with tooltips and right-click menus (needs `interactive = true`; uses `wpctl`, `nmcli` and `powerprofilesctl`).
 
 ## Layout
 
