@@ -37,6 +37,8 @@ type Module struct {
 	Name string `toml:"name"`
 	Zone string `toml:"zone"` // left | center | right
 	Exec string `toml:"exec"`
+	// Interactive: the module receives pointer events on stdin; see README.
+	Interactive bool `toml:"interactive"`
 }
 
 // Tray configures "neferbar tray".
