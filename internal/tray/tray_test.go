@@ -71,13 +71,17 @@ type fakeItem struct {
 	slowFor time.Duration // how long slow takes
 	tip     *[2]string    // its ToolTip title and description, set through run
 	title   string        // its Title property, set through run
+
+	// A dbusmenu at /MenuBar, set through run.
+	menu   *tnode
+	mcalls chan string // the dbusmenu calls it received
 }
 
 func newFakeItem(t *testing.T, addr, id, iconName string, pixel [4]byte) *fakeItem {
 	c := dial(t, addr)
 	f := &fakeItem{c: c, name: c.UniqueName(), driver: dial(t, addr), cmds: make(chan func(), 1),
 		cur: [3]string{id, iconName, "Active"}, pixel: pixel, closed: make(chan struct{}),
-		calls: make(chan string, 32)}
+		calls: make(chan string, 32), mcalls: make(chan string, 32)}
 	go f.serve()
 	return f
 }
@@ -108,6 +112,12 @@ func (f *fakeItem) serve() {
 			(<-f.cmds)()
 			continue
 		}
+		if m.Type == zerobus.TypeMethodCall && m.Interface == menuIface {
+			if !f.menuCall(m) {
+				return
+			}
+			continue
+		}
 		if m.Type == zerobus.TypeMethodCall && m.Interface == itemIface {
 			if !f.action(m) {
 				return
@@ -135,6 +145,12 @@ func (f *fakeItem) serve() {
 			e.EndArray(tp)
 			e.Str(f.tip[0])
 			e.Str(f.tip[1])
+		}
+		if f.menu != nil {
+			e.Struct()
+			e.Str("Menu")
+			e.Variant("o")
+			e.ObjectPath("/MenuBar")
 		}
 		if f.title != "" {
 			e.Struct()
