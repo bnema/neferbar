@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/bnema/neferbar/internal/fswatch"
+	"github.com/bnema/kvconf"
 )
 
 // debounce waits for a save to finish before the file is read.
@@ -24,7 +24,7 @@ func Watch(ctx context.Context, path string, last Config, out chan<- Config, log
 	wctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errc := make(chan error, 1)
-	go func() { errc <- fswatch.Watch(wctx, path, debounce, changed) }()
+	go func() { errc <- kvconf.Watch(wctx, path, kvconf.WatchOptions{Debounce: debounce}, changed) }()
 
 	for {
 		select {

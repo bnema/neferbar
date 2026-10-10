@@ -22,8 +22,8 @@ import (
 
 	"github.com/bnema/neferclient"
 
+	"github.com/bnema/kvconf"
 	"github.com/bnema/neferbar/internal/config"
-	"github.com/bnema/neferbar/internal/fswatch"
 	"github.com/bnema/neferbar/internal/glyph"
 	"github.com/bnema/neferbar/internal/gpu"
 	"github.com/bnema/neferbar/internal/layout"
@@ -212,7 +212,7 @@ func (b *Bar) watchTheme() {
 	b.themeCancel = cancel
 	for _, f := range b.theme.Files {
 		go func() {
-			if err := fswatch.Watch(ctx, f, 150*time.Millisecond, b.themeCh); err != nil {
+			if err := kvconf.Watch(ctx, f, kvconf.WatchOptions{Debounce: 150 * time.Millisecond}, b.themeCh); err != nil {
 				b.log.Warn("cannot watch a theme file; edits to it need a restart", "file", f, "err", err)
 			}
 		}()
@@ -241,7 +241,7 @@ func (b *Bar) watchScripts() {
 		go func() {
 			changed := make(chan struct{}, 1)
 			go func() {
-				if err := fswatch.WatchDir(ctx, dir, 150*time.Millisecond, changed); err != nil {
+				if err := kvconf.Watch(ctx, dir, kvconf.WatchOptions{Debounce: 150 * time.Millisecond, Dir: true}, changed); err != nil {
 					b.log.Warn("cannot watch a script directory; edits to its scripts need a restart", "dir", dir, "err", err)
 				}
 			}()
