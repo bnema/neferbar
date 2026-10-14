@@ -6,7 +6,7 @@ Each part of the bar is a script. A script prints text, and neferbar shows it. I
 
 ![The bundled bar on a NeferWL desktop with a terminal and an empty Firefox: workspaces on the left, the focused app and its title in the middle, the clock on the right](docs/img/bundle.png)
 
-- **Text only.** ASCII, Unicode and Nerd Font icons. No images, no widgets, no clicks.
+- **Text only.** ASCII, Unicode and Nerd Font icons. 
 - **Exactly one character high.** The bar is as tall as a terminal row, and it follows your monitor's scale.
 - **Scripts do the work.** Any language, anything that prints to stdout.
 - **Fast when you ask.** Print 60 times a second and the bar redraws 60 times a second. Print nothing and it uses no CPU or GPU.
