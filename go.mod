@@ -17,6 +17,7 @@ require (
 )
 
 require (
+	bnema.dev/wlturbo v0.7.0 // indirect
 	github.com/bnema/purego v0.13.0-bnema.2 // indirect
 	github.com/bnema/purego-xkbcommon v0.2.0 // indirect
 	github.com/go-text/typesetting v0.3.5 // indirect
