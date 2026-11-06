@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bnema/zerobus"
+	"bnema.dev/zerobus"
 )
 
 const (

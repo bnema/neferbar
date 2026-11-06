@@ -11,9 +11,9 @@ import (
 	"sync"
 	"unicode"
 
-	wlr "github.com/bnema/go-wayland-bindings/client/wlrforeigntoplevelmanagement"
-	"github.com/bnema/neferclient"
-	wl "github.com/bnema/wlturbo"
+	wlr "bnema.dev/go-wayland-bindings/client/wlrforeigntoplevelmanagement"
+	"bnema.dev/neferclient"
+	wl "bnema.dev/wlturbo"
 )
 
 // Window is what the bar shows about the focused window. The zero Window means

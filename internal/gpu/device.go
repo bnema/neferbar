@@ -9,7 +9,7 @@ import (
 	"math"
 	"unsafe"
 
-	"github.com/bnema/purego-vulkan/vulkan"
+	"bnema.dev/purego-vulkan/vulkan"
 )
 
 // requiredExtensions are mandatory on the device that matches the compositor's

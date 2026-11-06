@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/bnema/nefergui"
+	"bnema.dev/nefergui"
 
 	"github.com/bnema/neferbar/internal/module"
 )

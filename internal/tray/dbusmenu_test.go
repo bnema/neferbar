@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bnema/zerobus"
+	"bnema.dev/zerobus"
 
 	"github.com/bnema/neferbar/internal/module"
 )

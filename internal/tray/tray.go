@@ -21,8 +21,8 @@ import (
 	"strings"
 	"sync"
 
-	vt "github.com/bnema/vev-vt"
-	"github.com/bnema/zerobus"
+	vt "bnema.dev/vev-vt"
+	"bnema.dev/zerobus"
 )
 
 const (

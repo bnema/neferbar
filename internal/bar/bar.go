@@ -20,9 +20,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/bnema/neferclient"
+	"bnema.dev/neferclient"
 
-	"github.com/bnema/kvconf"
+	"bnema.dev/kvconf"
 	"github.com/bnema/neferbar/internal/config"
 	"github.com/bnema/neferbar/internal/glyph"
 	"github.com/bnema/neferbar/internal/gpu"

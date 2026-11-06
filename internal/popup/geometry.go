@@ -7,7 +7,7 @@ package popup
 import (
 	"math"
 
-	"github.com/bnema/neferclient"
+	"bnema.dev/neferclient"
 )
 
 // Size limits of a popup, in logical pixels.

@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/bnema/kvconf"
+	"bnema.dev/kvconf"
 )
 
 // debounce waits for a save to finish before the file is read.

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bnema/zerobus"
+	"bnema.dev/zerobus"
 )
 
 // privateBus starts a dbus-daemon for the test and returns its address.

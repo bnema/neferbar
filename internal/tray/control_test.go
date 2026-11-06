@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bnema/zerobus"
+	"bnema.dev/zerobus"
 )
 
 func TestParseCommand(t *testing.T) {

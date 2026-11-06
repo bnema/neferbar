@@ -6,9 +6,10 @@ import (
 	"io"
 	"net"
 	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/bnema/zerobus"
+	"bnema.dev/zerobus"
 )
 
 // wb builds D-Bus wire data by hand (little endian), so tests can send bodies
@@ -140,8 +141,17 @@ func rawBus(t testing.TB) (addr string, next chan<- reply) {
 		if _, err = io.WriteString(c, "OK 0123456789abcdef\r\n"); err != nil {
 			return
 		}
-		if _, err = r.ReadString('\n'); err != nil { // BEGIN
-			return
+		for { // NEGOTIATE_UNIX_FD (declined) then BEGIN
+			line, err := r.ReadString('\n')
+			if err != nil {
+				return
+			}
+			if strings.HasPrefix(line, "BEGIN") {
+				break
+			}
+			if _, err = io.WriteString(c, "ERROR\r\n"); err != nil {
+				return
+			}
 		}
 		var hello wb
 		hello.str(":1.7")

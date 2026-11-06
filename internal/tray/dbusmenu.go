@@ -6,7 +6,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/bnema/zerobus"
+	"bnema.dev/zerobus"
 )
 
 const (

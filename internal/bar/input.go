@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/bnema/neferclient"
+	"bnema.dev/neferclient"
 
 	"github.com/bnema/neferbar/internal/layout"
 	"github.com/bnema/neferbar/internal/module"

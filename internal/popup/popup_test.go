@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bnema/neferclient"
+	"bnema.dev/neferclient"
 
 	"github.com/bnema/neferbar/internal/module"
 )

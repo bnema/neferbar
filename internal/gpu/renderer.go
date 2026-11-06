@@ -7,7 +7,7 @@ import (
 	"math"
 	"unsafe"
 
-	"github.com/bnema/purego-vulkan/vulkan"
+	"bnema.dev/purego-vulkan/vulkan"
 	"golang.org/x/sys/unix"
 
 	"github.com/bnema/neferbar/internal/glyph"

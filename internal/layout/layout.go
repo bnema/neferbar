@@ -2,7 +2,7 @@
 package layout
 
 import (
-	vt "github.com/bnema/vev-vt"
+	vt "bnema.dev/vev-vt"
 
 	"github.com/bnema/neferbar/internal/glyph"
 	"github.com/bnema/neferbar/internal/gpu"

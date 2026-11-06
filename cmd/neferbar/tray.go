@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/bnema/zerobus"
+	"bnema.dev/zerobus"
 
 	"github.com/bnema/neferbar/internal/config"
 	"github.com/bnema/neferbar/internal/glyph"
